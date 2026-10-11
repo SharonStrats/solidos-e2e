@@ -1,0 +1,30 @@
+{
+  "name": "@solidos/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone Playwright end-to-end tests for SolidOS.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:debug": "playwright test --debug",
+    "test:access-control": "npm --prefix ../solid-ui run build-cdn && E2E_RUN_ACCESS_CONTROL=true E2E_START_APP=true E2E_BASE_URL=http://127.0.0.1:3101 E2E_APP_COMMAND='node scripts/access-control-test-host.mjs' playwright test tests/access-control/access-control-focus.spec.ts",
+    "check-config": "node scripts/check-config.mjs",
+    "setup:local": "node scripts/setup-local.mjs",
+    "cleanup:local": "node scripts/cleanup-local.mjs",
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@types/n3": "^1.26.4",
+    "@types/node": "^22.0.0",
+    "n3": "^2.13.12",
+    "typescript": "^5.7.0"
+  }
+}

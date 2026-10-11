@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Access-control dialog E2E host</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; }
+      main { padding: 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <solid-ui-provider>
+        <solid-ui-button id="open-access-control">Open sharing settings</solid-ui-button>
+      </solid-ui-provider>
+    </main>
+    <script type="module">
+      import '/solid-ui/components.js'
+      import { showDialog } from '/solid-ui/index.js'
+      import AccessControlModal from '/solid-ui/components/access-control-modal.js'
+
+      const accessGrants = Array.from({ length: 10 }, (_, index) => ({
+        agent: [`http://127.0.0.1:3101/people/person-${index + 1}#me`],
+        agentClass: [],
+        agentGroup: [],
+        origin: [],
+        mode: ['Read']
+      }))
+
+      document.querySelector('#open-access-control').addEventListener('click', () => {
+        const modal = showDialog(AccessControlModal, {
+          props: {
+            subjectUri: `${location.origin}/shared-resource`,
+            accessGrants
+          }
+        })
+
+        // Directory lookups are not part of this keyboard test. Keep the
+        // real combobox deterministic while preserving its keyboard behavior.
+        modal.accessPrincipleOptionsProvider = async (query) => query
+          ? [{ label: `Use origin https://${query}`, value: `https://${query}` }]
+          : []
+      })
+    </script>
+  </body>
+</html>
