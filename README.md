@@ -1,5 +1,7 @@
 # SolidOS End-to-End Tests
 
+`npm run test:local` and `npm run test:all` run the authenticated and smoke tests against `http://localhost:3100`. The public profile-read tests use `https://sharon.pivot-test.solidproject.org:3000/profile/card#me` by default and can be overridden with `E2E_PROFILE_URL`.
+
 Standalone Playwright tests for the SolidOS browser application. The suite is
 kept separate from the SolidOS application workspace so it can test a running
 deployment without changing application dependencies or source code.

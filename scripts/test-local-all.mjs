@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
+const publicProfileURL = process.env.E2E_PROFILE_URL || 'https://sharon.pivot-test.solidproject.org:3000/profile/card#me'
 const runtimeFile = resolve(process.env.E2E_RUNTIME_FILE || '.e2e-runtime.json')
 const pivotDataRoot = process.env.E2E_PIVOT_DATA_ROOT || resolve('../pivot/data')
 
@@ -26,19 +27,25 @@ const environment = {
   E2E_USE_LOCAL_RUNTIME: 'true'
 }
 
-if (!existsSync(runtimeFile)) {
+let runtimeNeedsSetup = !existsSync(runtimeFile)
+if (!runtimeNeedsSetup) {
+  try {
+    const existingRuntime = JSON.parse(readFileSync(runtimeFile, 'utf8'))
+    runtimeNeedsSetup = !existingRuntime.profileFile || !existsSync(existingRuntime.profileFile)
+  } catch {
+    runtimeNeedsSetup = true
+  }
+}
+
+if (runtimeNeedsSetup) {
   console.log(`[e2e-local ${new Date().toISOString()}] No runtime found; creating a disposable account`)
   run('npm', ['run', 'setup:local'], environment)
 }
 
 const runtime = JSON.parse(readFileSync(runtimeFile, 'utf8'))
-if (process.env.E2E_PROFILE_URL) {
-  environment.E2E_RUN_PROFILE_READS = 'true'
-  environment.E2E_PROFILE_URL = process.env.E2E_PROFILE_URL
-} else {
-  environment.E2E_RUN_PROFILE_READS = 'false'
-  console.log(`[e2e-local ${new Date().toISOString()}] No E2E_PROFILE_URL supplied; skipping public profile-read fixtures`)
-}
+environment.E2E_RUN_PROFILE_READS = 'true'
+environment.E2E_PROFILE_URL = publicProfileURL
+console.log(`[e2e-local ${new Date().toISOString()}] Public profile reads use ${publicProfileURL}`)
 
 console.log(`[e2e-local ${new Date().toISOString()}] Running all tests supported by ${baseURL}`)
 run('npx', ['playwright', 'test'], environment)
