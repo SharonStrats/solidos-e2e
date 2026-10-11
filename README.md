@@ -48,6 +48,39 @@ authentication state, passwords, or generated runtime files.
 
 ## Running the tests
 
+### One command for the complete E2E suite
+
+Start SolidOS on `http://localhost:3100`, then run this from the E2E workspace:
+
+```bash
+npm run test:all
+```
+
+This runs the localhost:3100 SolidOS tests first, then builds and runs the
+access-control tests using their temporary port-3101 component host. If
+`.e2e-runtime.json` does not exist, it creates the disposable account and
+profile automatically using `../pivot/data`; later runs reuse that runtime.
+Set `E2E_PIVOT_DATA_ROOT` when using a different local environment.
+
+Public profile-read fixtures are skipped unless `E2E_PROFILE_URL` points to a
+complete readable profile, because the disposable mutation profile is
+intentionally minimal. To run those reads as part of the same command:
+
+```bash
+E2E_PROFILE_URL=http://localhost:3100/<public-profile>/profile/card#me \
+npm run test:all
+```
+
+The command reports both workflows and exits unsuccessfully if either workflow
+fails.
+
+The access-control tests are separate because they build Solid UI and run a
+temporary test host on port 3101:
+
+```bash
+npm run test:access-control
+```
+
 There are two functional test modes:
 
 1. **Public profile reads** — run against a readable profile, including a
