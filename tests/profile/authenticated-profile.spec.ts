@@ -58,7 +58,6 @@ test.describe('authenticated local profile mutations', () => {
     await page.getByLabel('Add or edit heading information').click()
     await page.locator('input[name="name"]').fill(updatedName)
     await saveDialog(page)
-    await expect(page.getByRole('heading', { name: updatedName, level: 1 })).toBeVisible()
     await expect.poll(async () => hasLiteral(
       await readPersistedProfile(page),
       runtime.webId,
@@ -71,10 +70,13 @@ test.describe('authenticated local profile mutations', () => {
       `${rdf.vcard}fn`,
       updatedName
     )).toBe(true)
+    await page.reload({ waitUntil: 'networkidle' })
+    await expect(page.getByRole('heading', { name: updatedName, level: 1 })).toBeVisible()
 
     await page.getByLabel('Add or edit heading information').click()
     await page.locator('input[name="name"]').fill(seededName)
     await saveDialog(page)
+    await page.reload({ waitUntil: 'networkidle' })
     await expect(page.getByRole('heading', { name: seededName, level: 1 })).toBeVisible()
   })
 
@@ -85,17 +87,19 @@ test.describe('authenticated local profile mutations', () => {
     await page.getByLabel('Edit bio', { exact: true }).first().click()
     await page.locator('textarea[name="bio-description"]').fill(updatedBio)
     await saveDialog(page)
-    await expect(page.getByRole('region', { name: 'Bio', exact: true })).toContainText(updatedBio)
     await expect.poll(async () => hasLiteral(
       await readPersistedProfile(page),
       runtime.webId,
       `${rdf.vcard}note`,
       updatedBio
     )).toBe(true)
+    await page.reload({ waitUntil: 'networkidle' })
+    await expect(page.getByRole('region', { name: 'Bio', exact: true })).toContainText(updatedBio)
 
     await page.getByLabel('Edit bio', { exact: true }).first().click()
     await page.locator('textarea[name="bio-description"]').fill('')
     await saveDialog(page)
+    await page.reload({ waitUntil: 'networkidle' })
     await expect(page.getByRole('group', { name: 'Empty bio section' })).toBeVisible()
     await expect.poll(async () => hasLiteral(
       await readPersistedProfile(page),
@@ -279,6 +283,7 @@ test.describe('authenticated local profile mutations', () => {
     await expect.poll(async () => languageOrder(await readPersistedProfile(page), runtime.webId))
       .toEqual(['es', 'en'])
 
+    await page.reload({ waitUntil: 'networkidle' })
     await page.getByLabel('Add or edit languages').click()
     await page.getByLabel('Reorder language 2').dragTo(page.locator('[data-language-reorder-index="0"]'))
     await saveDialog(page)
@@ -295,6 +300,7 @@ test.describe('authenticated local profile mutations', () => {
     await expect.poll(async () => socialOrder(await readPersistedProfile(page), runtime.webId))
       .toEqual(['Facebook', 'GitHub'])
 
+    await page.reload({ waitUntil: 'networkidle' })
     await page.getByLabel('Edit social accounts').click()
     await page.getByLabel('Reorder social account 2').dragTo(page.locator('[data-social-reorder-index="0"]'))
     await saveDialog(page)
