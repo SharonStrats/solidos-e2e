@@ -52,4 +52,5 @@ export async function resetLocalProfile(): Promise<void> {
     runtime.profileFile,
     seededProfileTurtle(runtime.webId, new URL(runtime.profileUrl).origin)
   )
+  console.log(`[e2e ${new Date().toISOString()}] Reset disposable profile file: ${runtime.profileFile}`)
 }

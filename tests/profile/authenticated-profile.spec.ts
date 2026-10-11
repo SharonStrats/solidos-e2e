@@ -18,14 +18,27 @@ test.describe('authenticated local profile mutations', () => {
   test.setTimeout(60_000)
 
   test.beforeEach(async ({ page }) => {
+    console.log(`[e2e ${new Date().toISOString()}] Starting test: ${test.info().title}`)
+    page.on('console', (message) => console.log(`[e2e browser console] ${message.type()}: ${message.text()}`))
+    page.on('pageerror', (error) => console.log(`[e2e browser page error] ${error.message}`))
+    page.on('requestfailed', (request) => console.log(`[e2e request failed] ${request.method()} ${request.url()} (${request.failure()?.errorText || 'unknown error'})`))
+    page.on('response', (response) => {
+      if (response.status() >= 400) console.log(`[e2e HTTP ${response.status()}] ${response.request().method()} ${response.url()}`)
+    })
     test.skip(
       process.env.E2E_RUN_LOCAL_PROFILE !== 'true',
       'Run npm run setup:local, then set E2E_RUN_LOCAL_PROFILE=true and E2E_USE_LOCAL_RUNTIME=true.'
     )
-    await authenticateProfileOwner(page)
     await resetLocalProfile()
-    await page.goto(`${getLocalRuntime().profileUrl}#me`, { waitUntil: 'networkidle' })
+    console.log(`[e2e ${new Date().toISOString()}] Re-authenticating profile owner: ${test.info().title}`)
+    await authenticateProfileOwner(page)
+    console.log(`[e2e ${new Date().toISOString()}] Profile loaded: ${page.url()}`)
     await expect(page.getByLabel('Add or edit heading information')).toBeVisible()
+    console.log(`[e2e ${new Date().toISOString()}] Authenticated profile UI ready for: ${test.info().title}`)
+  })
+
+  test.afterEach(async ({ page }, testInfo) => {
+    console.log(`[e2e ${new Date().toISOString()}] Finished test: ${testInfo.title} (${testInfo.status}); final URL: ${page.url()}`)
   })
 
   test('serves valid seeded Turtle through HTTP and persists the same document locally', async ({ page }) => {

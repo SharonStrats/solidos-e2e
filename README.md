@@ -157,13 +157,31 @@ E2E_PIVOT_DATA_ROOT=/absolute/path/to/pivot/data \
 npm run cleanup:local
 ```
 
-The setup script creates a unique account and pod, seeds the test profile,
-stores runtime details in `.e2e-runtime.json`, and saves browser state under
-`storage-state/`. Both locations are ignored by Git. The authenticated suite
-reseeds only that runtime's disposable profile file before every scenario, so
-each result starts from the same RDF fixture and a failing scenario does not
-contaminate later results. Cleanup should be run after successful and
-interrupted test runs.
+For the currently running local application on port 3100, the authenticated test
+command is:
+
+```bash
+E2E_BASE_URL=http://localhost:3100 \
+E2E_RUN_LOCAL_PROFILE=true \
+E2E_USE_LOCAL_RUNTIME=true \
+npm run test:e2e -- tests/profile/authenticated-profile.spec.ts
+```
+
+Run `npm run setup:local` first when `.e2e-runtime.json` does not exist or the
+saved session has expired. The setup and authenticated tests print timestamped
+milestones, browser console errors, page errors, and failed requests. The setup
+logs never print the generated password or cookie contents.
+
+The setup script creates a unique account and pod, authenticates the browser
+once, seeds the test profile, stores runtime details in `.e2e-runtime.json`,
+and saves that authenticated browser state under `storage-state/`. Both
+locations are ignored by Git. The authenticated suite restores only that
+runtime's disposable profile file *before navigating to it* for every
+scenario; it does not repeat the identity-provider UI flow or replace the
+saved browser session. Local-profile runs use one Playwright worker so these
+file resets cannot overlap, while the normal (non-serial) test mode still
+continues with later tests after an individual failure. Cleanup should be run
+after successful and interrupted test runs.
 
 Do not use the setup or mutation commands against a personal account, shared
 pod, or production deployment.

@@ -41,6 +41,13 @@
         modal.accessPrincipleOptionsProvider = async (query) => query
           ? [{ label: `Use origin https://${query}`, value: `https://${query}` }]
           : []
+
+        // Saving ACL documents belongs to Solid Logic's integration coverage.
+        // The host only verifies that the dialog's Save control is keyboard
+        // operable and closes through the real dialog lifecycle.
+        modal.saveAccessChanges = async () => {
+          modal.shadowRoot?.querySelector('solid-ui-dialog')?.close()
+        }
       })
     </script>
   </body>

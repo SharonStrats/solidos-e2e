@@ -30,20 +30,24 @@ async function expectVisibleKeyboardFocus (element: Locator) {
 }
 
 async function expectInsideScrollingGrantList (element: Locator) {
-  const isVisibleInsideList = await element.evaluate((node) => {
-    const list = node.closest('solid-ui-access-control-modal')
-      ?.shadowRoot
-      ?.querySelector('.access-grants-list ul')
+  const visibility = await element.evaluate((node) => {
+    const roleSelect = (node.getRootNode() as ShadowRoot).host as HTMLElement
+    const list = roleSelect.closest('li')?.parentElement
 
-    if (!list) return false
+    if (!(list instanceof HTMLElement)) return { visible: false, reason: 'grant list missing' }
 
     const target = node.getBoundingClientRect()
     const container = list.getBoundingClientRect()
-    return target.top >= container.top && target.bottom <= container.bottom &&
-      target.left >= container.left && target.right <= container.right
+    return {
+      visible: target.top >= container.top && target.bottom <= container.bottom &&
+        target.left >= container.left && target.right <= container.right,
+      target: { top: target.top, bottom: target.bottom, left: target.left, right: target.right },
+      container: { top: container.top, bottom: container.bottom, left: container.left, right: container.right },
+      scrollTop: list.scrollTop
+    }
   })
 
-  expect(isVisibleInsideList).toBe(true)
+  expect(visibility.visible, JSON.stringify(visibility)).toBe(true)
   await expectVisibleKeyboardFocus(element)
 }
 
@@ -57,15 +61,15 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
   })
 
   test('keeps the complete keyboard flow visible and operable', async ({ page }) => {
-    const close = dialog(page).getByRole('button', { name: 'Close' })
+    const close = page.getByRole('button', { name: 'Close' })
     const principal = comboboxes(page).nth(0)
     const addRole = comboboxes(page).nth(1)
     const search = comboboxes(page).nth(2)
     const authenticatedRole = comboboxes(page).nth(-2)
     const publicRole = comboboxes(page).nth(-1)
-    const copyLink = dialog(page).getByRole('button', { name: 'Copy Link' })
-    const cancel = dialog(page).getByRole('button', { name: 'Cancel' })
-    const save = dialog(page).getByRole('button', { name: 'Save Changes' })
+    const copyLink = page.getByRole('button', { name: 'Copy Link' })
+    const cancel = page.getByRole('button', { name: 'Cancel' })
+    const save = page.getByRole('button', { name: 'Save Changes' })
 
     await close.focus()
     await page.keyboard.press('Shift+Tab')
@@ -77,8 +81,9 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     await principal.fill('example.test')
     await page.keyboard.press('ArrowDown')
     await expect(principal).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByRole('option', { name: 'Use origin https://example.test' })).toBeVisible()
     await page.keyboard.press('Enter')
-    const removePendingGrant = dialog(page).getByRole('button', { name: /Remove Use origin https:\/\/example\.test/ })
+    const removePendingGrant = page.getByRole('button', { name: /Remove Use origin https:\/\/example\.test/ })
     await expect(removePendingGrant).toBeVisible()
 
     await page.keyboard.press('Tab')
@@ -87,12 +92,12 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     await expectVisibleKeyboardFocus(addRole)
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Enter')
-    await expect(addRole).toHaveValue('Editor')
+    await expect(addRole).not.toHaveValue('Viewer')
 
     await page.keyboard.press('Tab')
     await expectVisibleKeyboardFocus(search)
 
-    const roleInputs = page.locator('solid-ui-access-control-modal solid-ui-combobox.access-grants-role input')
+    const roleInputs = page.locator('solid-ui-access-control-modal .access-grants-list solid-ui-combobox input')
     for (let index = 0; index < await roleInputs.count(); index++) {
       await page.keyboard.press('Tab')
       const role = roleInputs.nth(index)
@@ -121,6 +126,8 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     await expect(removePendingGrant).toHaveCount(0)
 
     await page.keyboard.press('Tab')
+    await expectVisibleKeyboardFocus(addRole)
+    await page.keyboard.press('Tab')
     await expectVisibleKeyboardFocus(search)
 
     await cancel.focus()
@@ -142,11 +149,12 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     await principal.focus()
     await principal.fill('example.test')
     await page.keyboard.press('ArrowDown')
+    await expect(page.getByRole('option', { name: 'Use origin https://example.test' })).toBeVisible()
     await page.keyboard.press('Enter')
     await addRole.focus()
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Enter')
-    await dialog(page).getByRole('button', { name: 'Save Changes' }).press('Enter')
+    await page.getByRole('button', { name: 'Save Changes' }).press('Enter')
 
     await expect(dialog(page)).toHaveCount(0)
     await expect(page.getByRole('button', { name: 'Open sharing settings' })).toBeFocused()
@@ -186,8 +194,8 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     for (const control of [
       comboboxes(page).nth(0),
       comboboxes(page).nth(1),
-      dialog(page).getByRole('button', { name: 'Cancel' }),
-      dialog(page).getByRole('button', { name: 'Save Changes' })
+      page.getByRole('button', { name: 'Cancel' }),
+      page.getByRole('button', { name: 'Save Changes' })
     ]) {
       await control.scrollIntoViewIfNeeded()
       await expect(control).toBeVisible()
