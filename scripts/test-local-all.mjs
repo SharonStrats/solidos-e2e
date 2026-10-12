@@ -27,6 +27,27 @@ const environment = {
   E2E_USE_LOCAL_RUNTIME: 'true'
 }
 
+async function requireRunningApplication() {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 5000)
+
+  try {
+    await fetch(baseURL, {
+      signal: controller.signal,
+      redirect: 'manual'
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(`[e2e-local ${new Date().toISOString()}] SolidOS is not available at ${baseURL}: ${reason}`)
+    console.error('[e2e-local] Start SolidOS first; no E2E setup, browser, or watcher will be started.')
+    process.exit(1)
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+await requireRunningApplication()
+
 let runtimeNeedsSetup = !existsSync(runtimeFile)
 if (!runtimeNeedsSetup) {
   try {

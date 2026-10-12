@@ -48,6 +48,18 @@ createServer((request, response) => {
     return
   }
 
+  if (pathname === '/subjects/agent') {
+    response.writeHead(200, { 'content-type': 'text/turtle' })
+    response.end('@prefix foaf: <http://xmlns.com/foaf/0.1/>. <> a foaf:PersonalProfileDocument. <#me> a foaf:Person.')
+    return
+  }
+
+  if (pathname === '/subjects/group') {
+    response.writeHead(200, { 'content-type': 'text/turtle' })
+    response.end('@prefix vcard: <http://www.w3.org/2006/vcard/ns#>. <> a vcard:Group.')
+    return
+  }
+
   response.writeHead(404)
   response.end('Not found')
 }).listen(port, '127.0.0.1', () => {

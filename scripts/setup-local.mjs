@@ -78,10 +78,12 @@ async function main() {
     await page.waitForURL('**/.account/account/**')
     log(`Registration complete; account page loaded: ${page.url()}`)
 
-    await page.locator('#createPod[href]').waitFor({ state: 'attached' })
+    await page.waitForFunction(() => Boolean(document.querySelector('#createPod')?.getAttribute('href')))
     log('Opening create-pod flow')
     await page.locator('#createPod[href]').click()
-    await page.getByLabel('Name').fill(podName)
+    const podNameInput = page.getByLabel('Name', { exact: true })
+    await podNameInput.waitFor({ state: 'visible' })
+    await podNameInput.fill(podName)
     log('Submitting create-pod form')
     await page.getByRole('button', { name: 'Create pod' }).click()
 
@@ -129,10 +131,11 @@ async function main() {
     log(`Opening seeded profile before authentication: ${profileUrl}#me`)
     await page.goto(`${profileUrl}#me`, { waitUntil: 'domcontentloaded' })
     log(`Profile page loaded before authentication: ${page.url()}`)
-    await page.getByRole('button', { name: 'Log In', exact: true }).click()
-    log('Login dialog opened')
-    await page.getByRole('heading', { name: 'Select an identity provider' }).waitFor()
-    await page.getByRole('button', { name: 'Login', exact: true }).click()
+    await page.evaluate(({ issuer, redirectUrl }) => window.SolidLogic.authSession.login(issuer, redirectUrl), {
+      issuer: `${baseURL.replace(/\/$/, '')}/`,
+      redirectUrl: profileUrl
+    })
+    log('Local identity-provider login started')
     await page.waitForURL((url) =>
       url.pathname.startsWith('/.account/login/password/') ||
       url.pathname.startsWith('/.account/oidc/consent/')

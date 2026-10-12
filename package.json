@@ -12,10 +12,11 @@
     "test:e2e:debug": "playwright test --debug",
     "test:local": "node scripts/test-local-all.mjs",
     "test:all": "node scripts/test-all.mjs",
-    "test:access-control": "npm --prefix ../solid-ui run build-cdn && E2E_RUN_ACCESS_CONTROL=true E2E_START_APP=true E2E_BASE_URL=http://127.0.0.1:3101 E2E_APP_COMMAND='node scripts/access-control-test-host.mjs' playwright test tests/access-control/access-control-focus.spec.ts",
+    "test:access-control": "node scripts/test-access-control.mjs",
     "check-config": "node scripts/check-config.mjs",
     "setup:local": "node scripts/setup-local.mjs",
     "cleanup:local": "node scripts/cleanup-local.mjs",
+    "cleanup:access-control": "node scripts/cleanup-access-control.mjs",
     "report": "playwright show-report",
     "typecheck": "tsc --noEmit"
   },

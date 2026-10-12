@@ -7,5 +7,6 @@ blob-report/
 !.env.example
 storage-state/
 .e2e-runtime.json
+.access-control-runtime.json
 *.local.json
 .DS_Store

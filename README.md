@@ -58,8 +58,13 @@ Start SolidOS on `http://localhost:3100`, then run this from the E2E workspace:
 npm run test:all
 ```
 
-This runs the localhost:3100 SolidOS tests first, then builds and runs the
-access-control tests using their temporary port-3101 component host. If
+The local workflow checks that the configured application URL is reachable
+before creating runtime data or launching any E2E process. If
+`http://localhost:3100` is down, it exits without starting setup, a browser, or
+a watcher.
+
+This runs the localhost:3100 SolidOS tests first, followed by the browser-driven
+access-control dialog tests. If
 `.e2e-runtime.json` does not exist, it creates the disposable account and
 profile automatically using `../pivot/data`; later runs reuse that runtime.
 Set `E2E_PIVOT_DATA_ROOT` when using a different local environment.
@@ -73,8 +78,21 @@ E2E_PROFILE_URL=http://localhost:3100/<public-profile>/profile/card#me \
 npm run test:all
 ```
 
-The command reports both workflows and exits unsuccessfully if either workflow
-fails.
+The command reports each workflow and exits unsuccessfully if any workflow
+fails. Its `finally` cleanup also removes access-control disposable resources,
+including resources from a setup that failed before
+`.access-control-runtime.json` was written.
+
+To clean only those resources explicitly:
+
+```bash
+E2E_PIVOT_DATA_ROOT=/absolute/path/to/pivot/data npm run cleanup:access-control
+```
+
+Cleanup only considers storage-state files named
+`access-control-owner-*`/`access-control-viewer-*`, account logins beginning
+with `e2e-acl-`, pods named `e2e-acl-owner-*` or `e2e-acl-viewer-*`, and matching
+local fixture directories. Other accounts, pods, and data are not selected.
 
 The access-control tests are separate because they build Solid UI and run a
 temporary test host on port 3101:
@@ -83,16 +101,17 @@ temporary test host on port 3101:
 npm run test:access-control
 ```
 
-There are two functional test modes:
+There are three functional test modes:
 
 1. **Public profile reads** — run against a readable profile, including a
    locally running SolidOS application. These tests do not write data.
 2. **Authenticated local mutations** — run against a disposable local account
    and profile created by `setup:local`. These tests create, update, reorder,
    and remove profile data, then verify the saved RDF.
-3. **Access-control dialog keyboard and reflow verification** — builds the
-   local Solid UI CDN bundle and serves a focused test host containing the real
-   dialog. It does not contact a pod or modify application data.
+3. **Access-control dialog behavior** — builds the local Solid UI CDN bundle and
+   serves a focused test host containing the real dialog. It exercises sharing
+   changes in the browser and verifies the resulting in-memory ACL mapping; it
+   does not contact a pod or modify application data.
 
 There is also a safe discovery mode. Running `npm run test:e2e` with no
 environment flags only discovers the tests; it does not run the functional
@@ -296,32 +315,20 @@ Tests use roles, labels, accessible names, and test IDs before implementation
 selectors. RDF assertions use stable predicates and values rather than
 presentation-specific markup.
 
-## Current coverage
+## Tests Covered
 
-### Smoke and configuration
+### Profile Pane
 
-- application reachability and page title;
-- Playwright configuration validation;
-- TypeScript validation for the E2E workspace.
-
-### Public profile rendering
-
-The read suite currently covers:
+#### Public data
 
 - profile heading and primary contact details;
 - bio text;
-- skills;
-- languages;
-- projects and community links;
+- skills and languages after expanding their sections;
+- project and community data;
 - social accounts;
-- additional phone, email, and postal contact details.
+- phone, email, and postal contact details.
 
-Sections are expanded through their accessible controls before assertions are
-made, so collapsed-section behavior is not mistaken for missing data.
-
-### Authenticated profile persistence
-
-The disposable local profile suite currently covers:
+#### Authenticated data persistence
 
 - authenticated profile retrieval and local-file Turtle parsing;
 - heading update and restoration;
@@ -338,6 +345,39 @@ The disposable local profile suite currently covers:
 - social-account RDF-list reordering and restoration.
 
 Every mutation is checked through the browser and the persisted RDF document.
+
+### Access Control
+
+#### Data
+
+- provision two disposable local accounts with separate authenticated sessions;
+- create a dedicated target resource and discover its ACL through the HTTP
+   `Link: ...; rel=acl` header;
+- add a viewer grant and verify the corresponding ACL Turtle;
+- verify a viewer can read but cannot write;
+- change viewer access to editor and verify the added write permission;
+- verify an editor can write the target resource;
+- revoke the viewer grant and verify access is denied;
+- preserve owner read, write, and control access while changing another grant;
+- clean up disposable accounts, pods, profiles, and runtime state.
+
+#### Accessibility
+
+- complete keyboard tab flow through the sharing dialog;
+- keyboard selection of principals and roles;
+- pending-grant removal by keyboard;
+- Save, Cancel, and Escape behavior;
+- restoration of focus to the dialog opener;
+- visible keyboard focus indicators;
+- scrolling the focused grant row into view;
+- no horizontal overflow at a 320 CSS-pixel viewport;
+- footer and dialog controls remain visible and operable after reflow.
+
+### Smoke and configuration
+
+- application reachability and page title;
+- Playwright configuration validation;
+- TypeScript validation for the E2E workspace.
 
 
 

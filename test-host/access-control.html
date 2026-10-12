@@ -20,16 +20,77 @@
       import { showDialog } from '/solid-ui/index.js'
       import AccessControlModal from '/solid-ui/components/access-control-modal.js'
 
-      const accessGrants = Array.from({ length: 10 }, (_, index) => ({
+      const roles = {
+        'No Access': [],
+        Viewer: ['Read'],
+        Poster: ['Read', 'Append'],
+        Submitter: ['Append'],
+        Editor: ['Read', 'Write'],
+        Owner: ['Read', 'Write', 'Control']
+      }
+      const publicRoles = {
+        'No Access': [],
+        Viewer: ['Read'],
+        Poster: ['Read', 'Append'],
+        Submitter: ['Append']
+      }
+      const subjects = (grant) => [
+        ...grant.agent.map(iri => ({ type: 'agent', iri })),
+        ...grant.agentGroup.map(iri => ({ type: 'agentGroup', iri })),
+        ...grant.agentClass.map(iri => ({ type: 'agentClass', iri })),
+        ...grant.origin.map(iri => ({ type: 'origin', iri }))
+      ]
+      const subjectGrant = (subject, mode) => ({
+        agent: subject.type === 'agent' ? [subject.iri] : [],
+        agentClass: subject.type === 'agentClass' ? [subject.iri] : [],
+        agentGroup: subject.type === 'agentGroup' ? [subject.iri] : [],
+        origin: subject.type === 'origin' ? [subject.iri] : [],
+        mode
+      })
+      const initialAccessGrants = Array.from({ length: 10 }, (_, index) => ({
         agent: [`http://127.0.0.1:3101/people/person-${index + 1}#me`],
         agentClass: [],
         agentGroup: [],
         origin: [],
         mode: ['Read']
       }))
+      let accessGrants = initialAccessGrants
+
+      const state = () => ({
+        grants: accessGrants.map(grant => ({ ...grant })),
+        subjectCount: accessGrants.reduce((count, grant) => count + subjects(grant).length, 0)
+      })
+      window.__accessControlState = state
+      window.__resetAccessControlState = () => {
+        accessGrants = []
+      }
+
+      function applyChange (change) {
+        const mode = change.subject.type === 'agentClass' &&
+          change.subject.iri === 'http://xmlns.com/foaf/0.1/Agent'
+          ? publicRoles[change.role] || []
+          : roles[change.role] || []
+        const index = accessGrants.findIndex(grant =>
+          subjects(grant).some(subject => subject.type === change.subject.type && subject.iri === change.subject.iri))
+        if (mode.length === 0) {
+          if (index >= 0) accessGrants = accessGrants.filter((_, grantIndex) => grantIndex !== index)
+          return
+        }
+        if (index >= 0) {
+          accessGrants[index] = { ...accessGrants[index], mode }
+        } else {
+          accessGrants = [...accessGrants, subjectGrant(change.subject, mode)]
+        }
+      }
 
       document.querySelector('#open-access-control').addEventListener('click', () => {
+        // Keep the native control as the dialog's focus return target. The
+        // custom-element host itself is not focusable in every browser.
+        const opener = document.querySelector('#open-access-control').shadowRoot?.querySelector('button')
+        opener?.focus()
+
         const modal = showDialog(AccessControlModal, {
+          onClose: () => setTimeout(() => opener?.focus()),
           props: {
             subjectUri: `${location.origin}/shared-resource`,
             accessGrants
@@ -39,13 +100,28 @@
         // Directory lookups are not part of this keyboard test. Keep the
         // real combobox deterministic while preserving its keyboard behavior.
         modal.accessPrincipleOptionsProvider = async (query) => query
-          ? [{ label: `Use origin https://${query}`, value: `https://${query}` }]
+          ? [{
+              label: query.startsWith('http://') || query.startsWith('https://')
+                ? `Use ${query}`
+                : `Use origin https://${query}`,
+              value: query
+            }]
           : []
 
-        // Saving ACL documents belongs to Solid Logic's integration coverage.
-        // The host only verifies that the dialog's Save control is keyboard
-        // operable and closes through the real dialog lifecycle.
+        // Keep the host deterministic while exercising the real modal. The
+        // resulting in-memory ACL is exposed only for browser assertions.
         modal.saveAccessChanges = async () => {
+          const changes = [
+            ...modal.pendingAccessGrants.map(grant => ({
+              subject: { type: grant.subjectType, iri: grant.subjectValue },
+              role: grant.role
+            })),
+            ...modal.getGeneralAccessChanges(),
+            ...modal.getChangedAccessGrants().flatMap(({ subjects, role }) =>
+              subjects.map(subject => ({ subject, role })))
+          ]
+          changes.forEach(applyChange)
+          modal.accessGrants = accessGrants
           modal.shadowRoot?.querySelector('solid-ui-dialog')?.close()
         }
       })
