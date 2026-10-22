@@ -13,12 +13,15 @@
     <main>
       <solid-ui-provider>
         <solid-ui-button id="open-access-control">Open sharing settings</solid-ui-button>
+        <solid-ui-button id="open-folder-access-control">Open folder sharing settings</solid-ui-button>
+        <solid-ui-button id="open-protected-access-control">Open protected root sharing settings</solid-ui-button>
       </solid-ui-provider>
     </main>
     <script type="module">
-      import '/solid-ui/components.js'
-      import { showDialog } from '/solid-ui/index.js'
-      import AccessControlModal from '/solid-ui/components/access-control-modal.js'
+      import 'solid-ui/components'
+      import { showDialog } from 'solid-ui'
+      import { solidLogicSingleton } from 'solid-logic'
+      import AccessControlModal from 'solid-ui/components/access-control-modal'
 
       const roles = {
         'No Access': [],
@@ -54,18 +57,72 @@
         origin: [],
         mode: ['Read']
       }))
+      initialAccessGrants[0].condition = [{
+        id: 'http://127.0.0.1:3101/shared-resource.acl#condition-1',
+        blankNode: false,
+        properties: {
+          'http://www.w3.org/ns/auth/acl#client': ['https://example.com/client']
+        }
+      }]
+      const protectedAccessGrants = [
+        {
+          agent: ['http://127.0.0.1:3101/profile/card#me'],
+          agentClass: [],
+          agentGroup: [],
+          origin: [],
+          accessTo: ['http://127.0.0.1:3101/'],
+          default: [],
+          mode: ['Read', 'Write', 'Control']
+        },
+        {
+          agent: ['http://127.0.0.1:3101/subjects/viewer#me'],
+          agentClass: [],
+          agentGroup: [],
+          origin: [],
+          accessTo: ['http://127.0.0.1:3101/'],
+          default: [],
+          mode: ['Read']
+        }
+      ]
       let accessGrants = initialAccessGrants
+      let containerScopes = ['folder+contents']
+      let inheritedContainer = false
 
       const state = () => ({
         grants: accessGrants.map(grant => ({ ...grant })),
         subjectCount: accessGrants.reduce((count, grant) => count + subjects(grant).length, 0)
       })
       window.__accessControlState = state
+      window.__accessControlLastScope = undefined
+      window.__accessControlLastPatch = []
       window.__resetAccessControlState = () => {
         accessGrants = []
+        containerScopes = ['folder+contents']
+        inheritedContainer = false
+        window.__accessControlLastScope = undefined
+        window.__accessControlLastPatch = []
+      }
+      window.__setAccessControlScopes = (scopes) => { containerScopes = scopes }
+      window.__setAccessControlInherited = (inherited) => { inheritedContainer = inherited }
+      window.__accessControlFailNextGrant = false
+
+      function containerAuthorizations () {
+        const resource = `${location.origin}/shared-folder/`
+        return containerScopes.map((scope, index) => ({
+          id: `${location.origin}/shared-folder/.acl#scope-${index}`,
+          blankNode: false,
+          accessTo: scope === 'contents' ? [] : [resource],
+          default: scope === 'folder' ? [] : [resource],
+          agent: [`${location.origin}/scope-${scope.replace('+', '-')}-${index}#me`],
+          agentClass: [],
+          agentGroup: [],
+          origin: [],
+          mode: ['Read'],
+          condition: []
+        }))
       }
 
-      function applyChange (change) {
+      function applyChange (change, containerScope = 'file', isContainerTarget = false) {
         const mode = change.subject.type === 'agentClass' &&
           change.subject.iri === 'http://xmlns.com/foaf/0.1/Agent'
           ? publicRoles[change.role] || []
@@ -79,52 +136,159 @@
         if (index >= 0) {
           accessGrants[index] = { ...accessGrants[index], mode }
         } else {
-          accessGrants = [...accessGrants, subjectGrant(change.subject, mode)]
+          const grant = subjectGrant(change.subject, mode)
+          if (isContainerTarget && inheritedContainer) {
+            if (containerScope !== 'contents') grant.accessTo = [`${location.origin}/shared-folder/`]
+            if (containerScope !== 'folder') grant.default = [`${location.origin}/shared-folder/`]
+          }
+          // The legacy ACL writer coalesces subjects that receive the same
+          // authorization. Keep that shape in the fixture so regressions do
+          // not pass merely because every principal gets a private grant.
+          const shared = accessGrants.find(candidate =>
+            JSON.stringify(candidate.mode) === JSON.stringify(grant.mode) &&
+            JSON.stringify(candidate.accessTo || []) === JSON.stringify(grant.accessTo || []) &&
+            JSON.stringify(candidate.default || []) === JSON.stringify(grant.default || []) &&
+            candidate.agentClass.length === 0 &&
+            candidate.agentGroup.length === 0 &&
+            candidate.origin.length === 0 &&
+            grant.agent.length === 1)
+          if (shared && grant.agent[0]) {
+            shared.agent = [...shared.agent, grant.agent[0]]
+          } else {
+            accessGrants = [...accessGrants, grant]
+          }
         }
       }
 
-      document.querySelector('#open-access-control').addEventListener('click', () => {
+      solidLogicSingleton.authn.currentUser = () => {
+        return solidLogicSingleton.store.sym(`${location.origin}/profile/card#me`)
+      }
+
+      function openAccessControl (protectedTarget = false, containerTarget = false) {
+        if (protectedTarget) accessGrants = protectedAccessGrants.map(grant => ({ ...grant }))
+        if (containerTarget) accessGrants = containerAuthorizations()
         // Keep the native control as the dialog's focus return target. The
         // custom-element host itself is not focusable in every browser.
-        const opener = document.querySelector('#open-access-control').shadowRoot?.querySelector('button')
+        const opener = document.querySelector(protectedTarget
+          ? '#open-protected-access-control'
+          : containerTarget
+            ? '#open-folder-access-control'
+            : '#open-access-control').shadowRoot?.querySelector('button')
         opener?.focus()
 
         const modal = showDialog(AccessControlModal, {
           onClose: () => setTimeout(() => opener?.focus()),
           props: {
-            subjectUri: `${location.origin}/shared-resource`,
+            subjectUri: protectedTarget
+              ? `${location.origin}/`
+              : containerTarget
+                ? `${location.origin}/shared-folder/`
+                : `${location.origin}/shared-resource`,
             accessGrants
           }
         })
-
-        // Directory lookups are not part of this keyboard test. Keep the
-        // real combobox deterministic while preserving its keyboard behavior.
-        modal.accessPrincipleOptionsProvider = async (query) => query
-          ? [{
-              label: query.startsWith('http://') || query.startsWith('https://')
-                ? `Use ${query}`
-                : `Use origin https://${query}`,
-              value: query
-            }]
-          : []
+        if (containerTarget) {
+          const resource = `${location.origin}/shared-folder/`
+          const authorizations = containerAuthorizations()
+          setTimeout(() => {
+            modal.accessContext = {
+              resource,
+              defaultACLResource: `${resource}.acl`,
+              effectiveACLResource: `${resource}.acl`,
+              inherited: inheritedContainer,
+              effectiveContainer: inheritedContainer ? `${location.origin}/inherited-folder/` : undefined,
+              authorizations,
+              conditions: [],
+              dataset: []
+            }
+            modal.requestUpdate()
+          }, 250)
+        }
+        if (protectedTarget) {
+          setTimeout(() => {
+            modal.accessGrants = protectedAccessGrants.map(grant => ({ ...grant }))
+            modal.requestUpdate()
+          })
+        }
 
         // Keep the host deterministic while exercising the real modal. The
         // resulting in-memory ACL is exposed only for browser assertions.
-        modal.saveAccessChanges = async () => {
+        modal.saveAccessChanges = async (scope = 'file') => {
+          window.__accessControlLastScope = scope
           const changes = [
             ...modal.pendingAccessGrants.map(grant => ({
               subject: { type: grant.subjectType, iri: grant.subjectValue },
               role: grant.role
             })),
             ...modal.getGeneralAccessChanges(),
-            ...modal.getChangedAccessGrants().flatMap(({ subjects, role }) =>
+            ...modal.accessGrantDrafts
+              .filter(({ subjects, role, initialRole }) => subjects.length > 0 && role !== initialRole)
+              .flatMap(({ subjects, role }) =>
               subjects.map(subject => ({ subject, role })))
           ]
-          changes.forEach(applyChange)
+          const selectedScope = containerTarget
+            ? inheritedContainer ? containerScopes[0] : modal.getSelectedContainerScope()
+            : 'file'
+          let failedChange
+          if (window.__accessControlFailNextGrant) {
+            window.__accessControlFailNextGrant = false
+            failedChange = changes.find(change => change.subject.type === 'agent')
+            if (failedChange) {
+              changes.filter(change => change !== failedChange).forEach(change => applyChange(change, selectedScope, containerTarget))
+            }
+          }
+          if (!failedChange && protectedTarget) {
+            const controlCount = accessGrants.filter(grant => grant.mode.includes('Control')).length
+            failedChange = changes.find(change =>
+              change.role !== 'Owner' &&
+              change.subject.type === 'agent' &&
+              subjects(accessGrants.find(grant => subjectMatches(grant, change.subject)) ?? { agent: [], agentGroup: [], agentClass: [], origin: [] }).length > 0 &&
+              controlCount <= 1)
+            if (failedChange) {
+              modal.errors = [{
+                action: failedChange.role === 'No Access' ? 'revoke' : 'grant',
+                targetUri: failedChange.subject.iri,
+                label: failedChange.subject.iri,
+                role: failedChange.role,
+                message: 'The protected storage resource must retain at least one Control authorization.'
+              }]
+              modal.requestUpdate()
+            }
+          }
+          if (!failedChange) changes.forEach(change => applyChange(change, selectedScope, containerTarget))
           modal.accessGrants = accessGrants
-          modal.shadowRoot?.querySelector('solid-ui-dialog')?.close()
+          if (containerTarget && inheritedContainer && !failedChange) {
+            window.__accessControlLastPatch = accessGrants.flatMap(grant => [
+              ...grant.agent.map(subject => ({ subject, predicate: 'acl:agent' })),
+              ...grant.agentClass.map(subject => ({ subject, predicate: 'acl:agentClass' })),
+              ...grant.agentGroup.map(subject => ({ subject, predicate: 'acl:agentGroup' })),
+              ...grant.origin.map(subject => ({ subject, predicate: 'acl:origin' })),
+              ...(grant.mode || []).map(mode => ({ subject: mode, predicate: 'acl:mode' })),
+              ...(grant.accessTo || []).map(target => ({ subject: target, predicate: 'acl:accessTo' })),
+              ...(grant.default || []).map(target => ({ subject: target, predicate: 'acl:default' }))
+            ])
+          }
+          if (failedChange) {
+            modal.principalInputValue = ''
+            modal.pendingAccessGrants = []
+            modal.errors = [{
+              action: 'grant',
+              targetUri: failedChange.subject.iri,
+              label: failedChange.subject.iri,
+              role: failedChange.role,
+              message: modal.errors?.[0]?.message || 'Simulated ACL grant failure'
+            }]
+            modal.requestUpdate()
+          } else {
+            modal.shadowRoot?.querySelector('solid-ui-dialog')?.close()
+          }
         }
-      })
+      }
+      const subjectMatches = (grant, subject) => subjects(grant).some(candidate =>
+        candidate.type === subject.type && candidate.iri === subject.iri)
+      document.querySelector('#open-access-control').addEventListener('click', () => openAccessControl())
+      document.querySelector('#open-folder-access-control').addEventListener('click', () => openAccessControl(false, true))
+      document.querySelector('#open-protected-access-control').addEventListener('click', () => openAccessControl(true))
     </script>
   </body>
 </html>

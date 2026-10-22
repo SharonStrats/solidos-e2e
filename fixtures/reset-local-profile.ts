@@ -1,9 +1,11 @@
 import { writeFile } from 'node:fs/promises'
 import { getLocalRuntime } from './local-runtime.js'
 
-function seededProfileTurtle(webId: string, issuer: string): string {
+function seededProfileTurtle(webId: string, issuer: string, podUrl: string): string {
   const profileDocument = webId.replace(/#me$/, '')
+  const preferencesUrl = new URL('settings/prefs.ttl', podUrl).toString()
   return `@prefix foaf: <http://xmlns.com/foaf/0.1/>.
+@prefix pim: <http://www.w3.org/ns/pim/space#>.
 @prefix schema: <http://schema.org/>.
 @prefix solid: <http://www.w3.org/ns/solid/terms#>.
 @prefix vcard: <http://www.w3.org/2006/vcard/ns#>.
@@ -28,6 +30,8 @@ function seededProfileTurtle(webId: string, issuer: string): string {
     );
     solid:preferredSubjectPronoun "They";
     solid:preferredObjectPronoun "Them";
+    pim:storage <${podUrl}>;
+    pim:preferencesFile <${preferencesUrl}>;
     solid:oidcIssuer <${issuer}/>.
 
 <#e2e-github>
@@ -50,7 +54,7 @@ export async function resetLocalProfile(): Promise<void> {
 
   await writeFile(
     runtime.profileFile,
-    seededProfileTurtle(runtime.webId, new URL(runtime.profileUrl).origin)
+    seededProfileTurtle(runtime.webId, new URL(runtime.profileUrl).origin, runtime.podUrl)
   )
   console.log(`[e2e ${new Date().toISOString()}] Reset disposable profile file: ${runtime.profileFile}`)
 }

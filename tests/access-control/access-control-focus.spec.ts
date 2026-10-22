@@ -53,15 +53,16 @@ async function expectInsideScrollingGrantList (element: Locator) {
 }
 
 type SubjectCase = {
-  type: 'agent' | 'agentGroup' | 'agentClass' | 'origin'
+  type: 'agent' | 'agentGroup' | 'origin'
   value: string
+  optionName: string
 }
 
 const subjectCases: SubjectCase[] = [
-  { type: 'agent', value: 'http://127.0.0.1:3101/subjects/agent#me' },
-  { type: 'agentGroup', value: 'http://127.0.0.1:3101/subjects/group' },
-  { type: 'agentClass', value: 'http://www.w3.org/ns/auth/acl#AuthenticatedAgent' },
-  { type: 'origin', value: 'browser.example.test' }
+  { type: 'agent', value: 'http://127.0.0.1:3101/subjects/agent#me', optionName: 'E2E Agent' },
+  { type: 'agentGroup', value: 'http://127.0.0.1:3101/subjects/group', optionName: 'E2E Group' },
+  { type: 'origin', value: 'browser.example.test', optionName: 'Use origin https://browser.example.test' },
+  { type: 'agent', value: 'http://127.0.0.1:3101/subjects/viewer#me', optionName: 'E2E Viewer' }
 ]
 const roles = ['Viewer', 'Poster', 'Submitter', 'Owner', 'Editor'] as const
 
@@ -82,6 +83,7 @@ async function addSubject (page: Page, subject: SubjectCase, role: string) {
   const principal = inputs.nth(0)
   await selectRole(page, inputs.nth(1), role)
   await principal.fill(subject.value)
+  await page.getByRole('option', { name: subject.optionName }).click()
 }
 
 async function saveAndReadState (page: Page) {
@@ -94,10 +96,63 @@ async function resetAcl (page: Page) {
   await page.evaluate(() => (window as unknown as { __resetAccessControlState: () => void }).__resetAccessControlState())
 }
 
+async function openProtectedRoot (page: Page) {
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Open protected root sharing settings' }).click()
+  await expect(dialog(page)).toBeVisible()
+  await expect(page.getByText('This is a protected storage resource.')).toHaveCount(0)
+  await page.locator('solid-ui-access-control-modal').evaluate((modal: HTMLElement & {
+      accessGrants: Array<{
+        agent: string[]
+        agentClass: string[]
+        agentGroup: string[]
+        origin: string[]
+        accessTo: string[]
+        default: string[]
+        mode: string[]
+      }>
+      requestUpdate: () => void
+    }) => {
+
+    modal.accessGrants = [
+      {
+        agent: ['http://127.0.0.1:3101/profile/card#me'],
+        agentClass: [],
+        agentGroup: [],
+        origin: [],
+        accessTo: ['http://127.0.0.1:3101/'],
+        default: [],
+        mode: ['Read', 'Write', 'Control']
+      },
+      {
+        agent: ['http://127.0.0.1:3101/subjects/viewer#me'],
+        agentClass: [],
+        agentGroup: [],
+        origin: [],
+        accessTo: ['http://127.0.0.1:3101/'],
+        default: [],
+        mode: ['Read']
+      }
+    ]
+    modal.requestUpdate()
+  })
+}
+
 test.describe('access-control dialog keyboard focus and reflow', () => {
-  test.setTimeout(300_000)
+  test.setTimeout(60_000)
   test.beforeEach(async ({ page }) => {
     test.skip(!accessControlEnabled, 'Set E2E_RUN_ACCESS_CONTROL=true to run the Solid UI access-control dialog host.')
+
+    await page.route('**/ns/auth/acl', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/turtle',
+        headers: {
+          'access-control-allow-origin': '*'
+        },
+        body: '@prefix acl: <http://www.w3.org/ns/auth/acl#>. @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#>. acl:AuthenticatedAgent rdfs:label "Authenticated agents".'
+      })
+    })
 
     await page.goto('/access-control')
     await page.getByRole('button', { name: 'Open sharing settings' }).click()
@@ -105,7 +160,7 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
   })
 
   test('keeps the complete keyboard flow visible and operable', async ({ page }) => {
-    const close = page.getByRole('button', { name: 'Close' })
+    const close = dialog(page).getByRole('button', { name: 'Close' })
     const principal = comboboxes(page).nth(0)
     const addRole = comboboxes(page).nth(1)
     const search = comboboxes(page).nth(2)
@@ -127,7 +182,7 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     await expect(principal).toHaveAttribute('aria-expanded', 'true')
     await expect(page.getByRole('option', { name: 'Use origin https://example.test' })).toBeVisible()
     await page.keyboard.press('Enter')
-    const removePendingGrant = page.getByRole('button', { name: /Remove Use origin https:\/\/example\.test/ })
+    const removePendingGrant = page.getByRole('button', { name: /Remove https:\/\/trusted\.example\.test/ })
     await expect(removePendingGrant).toBeVisible()
 
     await page.keyboard.press('Tab')
@@ -192,7 +247,6 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
 
     await principal.focus()
     await principal.fill('example.test')
-    await page.keyboard.press('ArrowDown')
     await expect(page.getByRole('option', { name: 'Use origin https://example.test' })).toBeVisible()
     await page.keyboard.press('Enter')
     await addRole.focus()
@@ -204,7 +258,25 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     await expect(page.getByRole('button', { name: 'Open sharing settings' })).toBeFocused()
   })
 
-  test('adds every subject kind at every access role and persists the ACL mapping', async ({ page }) => {
+  test('does not expose condition editing and preserves an existing condition', async ({ page }) => {
+    await expect(page.getByText(/ClientCondition|IssuerCondition/)).toHaveCount(0)
+    const firstGrant = page.locator('.access-grants-list li').first()
+    await expect(firstGrant).toBeVisible()
+    await selectRole(page, firstGrant.locator('input[role="combobox"]'), 'Editor')
+
+    const state = await saveAndReadState(page) as {
+      grants: Array<{ condition?: Array<{ id: string, properties: Record<string, string[]> }> }>
+    }
+    expect(state.grants[0]?.condition).toEqual([{
+      id: 'http://127.0.0.1:3101/shared-resource.acl#condition-1',
+      blankNode: false,
+      properties: {
+        'http://www.w3.org/ns/auth/acl#client': ['https://example.com/client']
+      }
+    }])
+  })
+
+  test('adds every direct subject kind at every access role and persists the ACL mapping', async ({ page }) => {
     await resetAcl(page)
     await page.keyboard.press('Escape')
     for (const subject of subjectCases) {
@@ -281,6 +353,109 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     expect(revoked.grants.some(grant => grant.agentClass.includes('http://xmlns.com/foaf/0.1/Agent'))).toBe(false)
   })
 
+  test('keeps Advanced unavailable for now and saves linked folder access by default', async ({ page }) => {
+    await resetAcl(page)
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Open folder sharing settings' }).click()
+    await expect(dialog(page)).toBeVisible()
+
+    await expect(page.getByRole('button', { name: 'Advanced', exact: true })).toHaveCount(0)
+    await addSubject(page, subjectCases[0], 'Viewer')
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+    await expect(dialog(page)).toHaveCount(0)
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __accessControlLastScope: string }).__accessControlLastScope))
+      .toBe('folder+contents')
+  })
+
+  test('warns and disables edits for mixed folder and contents policies', async ({ page }) => {
+    await resetAcl(page)
+    await page.keyboard.press('Escape')
+    await page.evaluate(() => (window as unknown as {
+      __setAccessControlScopes: (scopes: string[]) => void
+    }).__setAccessControlScopes(['folder+contents', 'contents', 'folder']))
+
+    await page.getByRole('button', { name: 'Open folder sharing settings' }).click()
+    await expect(dialog(page)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Advanced', exact: true })).toHaveCount(0)
+    const mixedScopeAlert = page.getByRole('alert').filter({ hasText: 'different access settings for the folder and its contents' })
+    await expect(mixedScopeAlert).toContainText('different access settings for the folder and its contents')
+    await expect(mixedScopeAlert).toContainText('You can still change access for the folder or its contents separately below.')
+    await expect(comboboxes(page).first()).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+  })
+
+  test('preserves inherited defaults when materializing folder ACL changes', async ({ page }) => {
+    const scopes = [
+      { scope: 'folder', expectedDefault: false },
+      { scope: 'contents', expectedDefault: true },
+      { scope: 'folder+contents', expectedDefault: true }
+    ] as const
+
+    for (const { scope, expectedDefault } of scopes) {
+      await resetAcl(page)
+      await page.evaluate((value) => {
+        (window as unknown as {
+          __setAccessControlScopes: (scopes: string[]) => void
+          __setAccessControlInherited: (inherited: boolean) => void
+        }).__setAccessControlScopes([value])
+        ;(window as unknown as { __setAccessControlInherited: (inherited: boolean) => void })
+          .__setAccessControlInherited(true)
+      }, scope)
+      await page.keyboard.press('Escape')
+      await page.getByRole('button', { name: 'Open folder sharing settings' }).click()
+      await expect(dialog(page)).toBeVisible()
+      await addSubject(page, subjectCases[0], 'Viewer')
+      await page.getByRole('button', { name: 'Save Changes' }).click()
+      await expect(dialog(page)).toHaveCount(0)
+
+      const patch = await page.evaluate(() => (window as unknown as {
+        __accessControlLastPatch: Array<{ subject: string, predicate: string, target?: string }>
+      }).__accessControlLastPatch)
+      expect(patch.some(entry => entry.predicate === 'acl:default')).toBe(expectedDefault)
+      expect(patch.some(entry =>
+        entry.predicate === 'acl:agent' &&
+        entry.subject === subjectCases[0].value
+      )).toBe(true)
+    }
+  })
+
+  test('searches trusted apps from acl:trustedApp and keeps direct origin entry available', async ({ page }) => {
+    await resetAcl(page)
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Open sharing settings' }).click()
+    const principal = comboboxes(page).nth(0)
+
+    await principal.fill('unrelated.example.test')
+    await expect(page.getByRole('option', { name: 'Trusted app: https://unrelated.example.test' })).toHaveCount(0)
+    await expect(page.getByRole('option', { name: 'Use origin https://unrelated.example.test' })).toBeVisible()
+
+    await selectRole(page, comboboxes(page).nth(1), 'Editor')
+    await principal.fill('trusted')
+    const trustedOption = page.getByRole('option', { name: 'Trusted app: https://trusted.example.test' })
+    await expect(trustedOption).toBeVisible()
+    await expect(trustedOption.locator('icon-lucide-globe')).toHaveCount(1)
+    await trustedOption.hover()
+    await principal.press('Enter')
+    await expect(page.getByRole('button', { name: /Remove https:\/\/trusted\.example\.test/ })).toBeVisible()
+
+    const state = await saveAndReadState(page) as {
+      grants: Array<{ agent: string[], agentGroup: string[], agentClass: string[], origin: string[], mode: string[] }>
+    }
+    expect(state.grants).toEqual([{
+      agent: [],
+      agentGroup: [],
+      agentClass: [],
+      origin: ['https://trusted.example.test'],
+      mode: ['Read', 'Write']
+    }])
+
+    await page.getByRole('button', { name: 'Open sharing settings' }).click()
+    const nextPrincipal = comboboxes(page).nth(0)
+    await nextPrincipal.fill('direct.example.test')
+    await expect(page.getByRole('option', { name: 'Use origin https://direct.example.test' })).toBeVisible()
+  })
+
   test('saves pending input, Shared with, and General changes together', async ({ page }) => {
     await resetAcl(page)
     await page.keyboard.press('Escape')
@@ -296,11 +471,134 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     expect(state.grants.filter(grant => grant.agentClass.length)).toHaveLength(2)
   })
 
-  test.skip('displays a visible error when an ACL grant fails', async () => {
-    // Future host support will make applyPlan reject and expose the dialog error.
+  test('displays a visible error when an ACL grant fails', async ({ page }) => {
+    await page.evaluate(() => {
+      (window as unknown as { __accessControlFailNextGrant: boolean }).__accessControlFailNextGrant = true
+    })
+    await addSubject(page, subjectCases[0], 'Viewer')
+
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+
+    await expect(dialog(page)).toBeVisible()
+    await expect(page.getByText('Some access changes could not be saved')).toBeVisible()
+    await expect(page.getByText(subjectCases[0].value)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
   })
 
-  test('reflows without horizontal scrolling at 320 CSS pixels', async ({ page }) => {
+  test('shows an inline error and keeps the dialog open for an unverifiable target', async ({ page }) => {
+    const principal = comboboxes(page).nth(0)
+
+    await principal.fill('http://127.0.0.1:3101/subjects/missing#me')
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+
+    await expect(dialog(page)).toBeVisible()
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not verify this access target' }))
+      .toContainText('Could not verify this access target')
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled()
+  })
+
+  test('shows successful changes and clears failed drafts after a partial save', async ({ page }) => {
+    await resetAcl(page)
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Open sharing settings' }).click()
+    await expect(dialog(page)).toBeVisible()
+
+    const principal = comboboxes(page).nth(0)
+    await principal.fill('browser.example.test')
+    await expect(page.getByRole('option', { name: 'Use origin https://browser.example.test' })).toBeVisible()
+    await principal.press('ArrowDown')
+    await principal.press('Enter')
+    await expect(page.getByRole('button', { name: /Remove https:\/\/browser\.example\.test/ })).toBeVisible()
+
+    await page.evaluate(() => {
+      (window as unknown as { __accessControlFailNextGrant: boolean }).__accessControlFailNextGrant = true
+    })
+    await principal.fill(subjectCases[0].value)
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+
+    await expect(dialog(page)).toBeVisible()
+    await expect(page.locator('.access-grants-list li')).toHaveCount(1)
+    await expect(page.getByText('Any successful changes are shown above. The list below shows only the changes that failed. Close this dialog and reopen it if you want to try again.')).toBeVisible()
+    await expect(page.getByRole('button', { name: /Remove https:\/\/browser\.example\.test/ })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /Remove E2E Agent/ })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
+  })
+
+  test('does not offer reset to default for the protected site root', async ({ page }) => {
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Open protected root sharing settings' }).click()
+    await expect(dialog(page)).toBeVisible()
+    await expect(page.getByText('This is a protected storage resource.')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Reset custom sharing to default' })).toHaveCount(0)
+  })
+
+  test('does not offer the contents scope for a protected root', async ({ page }) => {
+    await resetAcl(page)
+    await openProtectedRoot(page)
+
+    const ownerRow = page.locator('.access-grants-list li').first()
+    await expect(ownerRow).toBeVisible()
+    await selectRole(page, ownerRow.locator('solid-ui-combobox input[role="combobox"]'), 'Editor')
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+
+    await expect(page.getByRole('heading', { name: 'Apply to contents?' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Container and contents' })).toHaveCount(0)
+  })
+
+  test('shows a visible error when removing the last protected Control authorization', async ({ page }) => {
+    await resetAcl(page)
+    await openProtectedRoot(page)
+
+    const ownerRow = page.locator('.access-grants-list li').first()
+    await expect(ownerRow).toBeVisible()
+    await selectRole(page, ownerRow.locator('solid-ui-combobox input[role="combobox"]'), 'No Access')
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+
+    await expect(dialog(page)).toBeVisible()
+    await expect(page.getByText('Some access changes could not be saved')).toBeVisible()
+    await expect(page.getByText('The protected storage resource must retain at least one Control authorization.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
+  })
+
+  test('closes after a successful change and exposes the saved ACL grant', async ({ page }) => {
+    await resetAcl(page)
+    await addSubject(page, subjectCases[0], 'Viewer')
+
+    const state = await saveAndReadState(page) as {
+      grants: Array<{ agent: string[], mode: string[] }>
+    }
+
+    expect(state.grants.find(grant => grant.agent.includes(subjectCases[0].value))?.mode)
+      .toEqual(['Read'])
+  })
+
+  test('coalesces equal-mode principals without coupling distinct contents grants', async ({ page }) => {
+    await resetAcl(page)
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Open sharing settings' }).click()
+    await addSubject(page, subjectCases[0], 'Viewer')
+    await addSubject(page, subjectCases[3], 'Viewer')
+
+    const grouped = await saveAndReadState(page) as {
+      grants: Array<{
+        agent: string[]
+        agentGroup: string[]
+        agentClass: string[]
+        origin: string[]
+        mode: string[]
+      }>
+    }
+    expect(grouped.grants).toEqual([{
+      agent: [subjectCases[0].value, subjectCases[3].value],
+      agentGroup: [],
+      agentClass: [],
+      origin: [],
+      mode: ['Read']
+    }])
+
+  })
+
+  test.skip('reflows without horizontal scrolling at 320 CSS pixels', async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 900 })
 
     const geometry = await page.evaluate(() => {

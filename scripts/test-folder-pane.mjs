@@ -96,14 +96,16 @@ async function main () {
       throw new Error(`Runtime file ${runtimeFile} does not contain a pod URL. Run "npm run setup:local" and try again.`)
     }
 
-    const testFiles = [
+    const defaultTestFiles = [
       'tests/folder-pane/folder-pane-container.spec.ts',
       'tests/folder-pane/folder-pane-resources.spec.ts',
       'tests/folder-pane/folder-pane-created-resources.spec.ts',
       'tests/folder-pane/folder-pane-search.spec.ts',
-      ...process.argv.slice(2)
+      'tests/folder-pane/folder-pane-add-menu-panes.spec.ts'
     ]
-    const result = spawnSync('npx', ['playwright', 'test', ...testFiles], {
+    const requestedTestFiles = process.argv.slice(2)
+    const testFiles = requestedTestFiles.length > 0 ? requestedTestFiles : defaultTestFiles
+    const result = spawnSync('npx', ['playwright', 'test', '--workers=1', ...testFiles], {
       cwd: process.cwd(),
       env: {
         ...environment,

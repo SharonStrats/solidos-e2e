@@ -1,5 +1,5 @@
 import { request } from '@playwright/test'
-import { readFile, rm } from 'node:fs/promises'
+import { readdir, readFile, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
@@ -32,11 +32,23 @@ async function main() {
       })
       if (podsResponse.ok()) {
         const { pods = {} } = await podsResponse.json()
-        const podDeleteUrl = pods[runtime.podUrl]
-        if (podDeleteUrl) {
+        const podEntries = process.env.E2E_CLEANUP_ALL_DISPOSABLE_PODS === 'true'
+          ? Object.entries(pods).filter(([podUrl]) => {
+              try {
+                return new URL(podUrl).pathname.split('/').filter(Boolean).pop()?.startsWith('e2e-') === true
+              } catch {
+                return false
+              }
+            })
+          : [runtime.podUrl, runtime.viewerPodUrl]
+            .filter(Boolean)
+            .map(podUrl => [podUrl, pods[podUrl]])
+
+        for (const [podUrl, podDeleteUrl] of podEntries) {
+          if (!podDeleteUrl) continue
           const deletedPod = await api.delete(podDeleteUrl)
           if (!deletedPod.ok()) {
-            cleanupWarning = `Could not delete pod through the local account API: HTTP ${deletedPod.status()}`
+            cleanupWarning = `Could not delete pod ${podUrl} through the local account API: HTTP ${deletedPod.status()}`
           }
         }
       }
@@ -48,11 +60,13 @@ async function main() {
       })
       if (loginsResponse.ok()) {
         const { passwordLogins = {} } = await loginsResponse.json()
-        const loginDeleteUrl = passwordLogins[runtime.email]
-        if (loginDeleteUrl) {
-          const deletedLogin = await api.delete(loginDeleteUrl)
-          if (!deletedLogin.ok()) {
-            cleanupWarning = `Could not delete test login: HTTP ${deletedLogin.status()}`
+        for (const login of [runtime.email, runtime.viewerEmail].filter(Boolean)) {
+          const loginDeleteUrl = passwordLogins[login]
+          if (loginDeleteUrl) {
+            const deletedLogin = await api.delete(loginDeleteUrl)
+            if (!deletedLogin.ok()) {
+              cleanupWarning = `Could not delete test login: HTTP ${deletedLogin.status()}`
+            }
           }
         }
       }
@@ -64,10 +78,30 @@ async function main() {
     if (pivotDataRoot && runtime.podName.startsWith('e2e-')) {
       await rm(resolve(pivotDataRoot, runtime.podName), { force: true, recursive: true })
     }
+    if (process.env.E2E_CLEANUP_ALL_DISPOSABLE_PODS === 'true') {
+      if (pivotDataRoot) {
+        for (const entry of await readdir(pivotDataRoot, { withFileTypes: true })) {
+          if (entry.isDirectory() && entry.name.startsWith('e2e-')) {
+            await rm(resolve(pivotDataRoot, entry.name), { force: true, recursive: true })
+          }
+        }
+      }
+
+      const storageStateDirectory = resolve(runtimeFile, '..', 'storage-state')
+      for (const entry of await readdir(storageStateDirectory, { withFileTypes: true }).catch(() => [])) {
+        if (entry.isFile() && entry.name.startsWith('local-') && entry.name.endsWith('.json')) {
+          await rm(resolve(storageStateDirectory, entry.name), { force: true })
+        }
+      }
+    }
   }
 
   if (cleanupWarning) console.warn(cleanupWarning)
-  console.log(`Cleaned disposable pod and login for ${runtime.email}`)
+  console.log(
+    process.env.E2E_CLEANUP_ALL_DISPOSABLE_PODS === 'true'
+      ? `Cleaned disposable E2E pods and login for ${runtime.email}`
+      : `Cleaned disposable pods and logins for ${runtime.email}${runtime.viewerEmail ? ` and ${runtime.viewerEmail}` : ''}`
+  )
 }
 
 main().catch((error) => {

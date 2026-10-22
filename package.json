@@ -13,10 +13,13 @@
     "test:local": "node scripts/test-local-all.mjs",
     "test:all": "node scripts/test-all.mjs",
     "test:access-control": "node scripts/test-access-control.mjs",
+    "test:access-control:server": "node scripts/test-access-control-server.mjs",
+    "test:folder-pane": "node scripts/test-folder-pane.mjs",
     "check-config": "node scripts/check-config.mjs",
     "setup:local": "node scripts/setup-local.mjs",
     "cleanup:local": "node scripts/cleanup-local.mjs",
     "cleanup:access-control": "node scripts/cleanup-access-control.mjs",
+    "check:linked-workspaces": "node scripts/check-linked-workspaces.mjs",
     "report": "playwright show-report",
     "typecheck": "tsc --noEmit"
   },
@@ -28,6 +31,13 @@
     "@types/n3": "^1.26.4",
     "@types/node": "^22.0.0",
     "n3": "^2.13.12",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vite": "^8.0.16"
+  },
+  "dependencies": {
+    "folder-pane": "file:../folder-pane",
+    "solid-logic": "file:../solid-logic",
+    "solid-panes": "file:../solid-panes",
+    "solid-ui": "file:../solid-ui"
   }
 }

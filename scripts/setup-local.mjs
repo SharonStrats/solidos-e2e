@@ -4,15 +4,22 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
+if (process.env.E2E_EXTERNAL_SERVER === 'true' || !/^https?:\/\/localhost:3100\/?$/.test(baseURL)) {
+  throw new Error('setup:local is only for the disposable localhost:3100 runtime; use E2E_* credentials/profile variables for an external server')
+}
 const runtimeFile = resolve(process.env.E2E_RUNTIME_FILE || '.e2e-runtime.json')
 const runId = `${Date.now()}-${randomBytes(3).toString('hex')}`
 const email = process.env.E2E_TEST_EMAIL || `e2e-${runId}@localhost.test`
 const password = process.env.E2E_TEST_PASSWORD || `E2e-${randomBytes(12).toString('base64url')}!`
 const podName = process.env.E2E_TEST_POD_NAME || `e2e-${runId}`
-const pivotDataRoot = process.env.E2E_PIVOT_DATA_ROOT
+const viewerEmail = process.env.E2E_VIEWER_USERNAME || `e2e-viewer-${runId}@localhost.test`
+const viewerPassword = process.env.E2E_VIEWER_PASSWORD || `E2e-${randomBytes(12).toString('base64url')}!`
+const viewerPodName = process.env.E2E_VIEWER_POD_NAME || `e2e-viewer-${runId}`
+const pivotDataRoot = process.env.E2E_PIVOT_DATA_ROOT || resolve('../pivot/data')
 
-function profileFixture(webId, issuer) {
+function profileFixture(webId, issuer, podUrl) {
   const profileDocument = webId.replace(/#me$/, '')
+  const preferencesUrl = new URL('settings/prefs.ttl', podUrl).toString()
   return `
 <${profileDocument}>
     a foaf:PersonalProfileDocument;
@@ -34,6 +41,8 @@ function profileFixture(webId, issuer) {
     );
     solid:preferredSubjectPronoun "They";
     solid:preferredObjectPronoun "Them";
+    pim:storage <${podUrl}>;
+    pim:preferencesFile <${preferencesUrl}>;
     solid:oidcIssuer <${issuer}/>.
 
 <#e2e-github>
@@ -99,6 +108,30 @@ async function main() {
     log(`Pod created: ${podUrl}`)
     log(`WebID created: ${webId}`)
     const profileUrl = new URL('profile/card', podUrl.endsWith('/') ? podUrl : `${podUrl}/`).toString()
+    const preferencesUrl = new URL('settings/prefs.ttl', podUrl).toString()
+    // The server-side ACL suite needs a real second identity. Keep this
+    // account disposable and only persist its credentials in runtime state.
+    const viewerPage = await (await browser.newContext()).newPage()
+    await viewerPage.goto(`${baseURL}/.account/login/password/register/`, { waitUntil: 'domcontentloaded' })
+    await viewerPage.getByLabel('Email:', { exact: true }).fill(viewerEmail)
+    await viewerPage.getByLabel('Password:', { exact: true }).fill(viewerPassword)
+    await viewerPage.getByLabel('Confirm password:', { exact: true }).fill(viewerPassword)
+    await viewerPage.getByRole('button', { name: 'Register' }).click()
+    await viewerPage.waitForURL('**/.account/account/**')
+    await viewerPage.waitForFunction(() => Boolean(document.querySelector('#createPod')?.getAttribute('href')))
+    await viewerPage.locator('#createPod[href]').click()
+    await viewerPage.getByLabel('Name', { exact: true }).fill(viewerPodName)
+    await viewerPage.getByRole('button', { name: 'Create pod' }).click()
+    const viewerPodLink = viewerPage.locator('#response-podBaseUrl')
+    const viewerWebIdLink = viewerPage.locator('#response-webId')
+    await viewerPodLink.waitFor({ state: 'visible' })
+    await viewerWebIdLink.waitFor({ state: 'visible' })
+    const viewerPodUrl = await viewerPodLink.getAttribute('href')
+    const viewerWebId = await viewerWebIdLink.getAttribute('href')
+    if (!viewerPodUrl || !viewerWebId) {
+      throw new Error('Local identity provider did not return the disposable viewer pod and WebID')
+    }
+    await viewerPage.context().close()
     const profileFile = pivotDataRoot
       ? resolve(pivotDataRoot, podName, 'profile', 'card$.ttl')
       : null
@@ -109,6 +142,11 @@ async function main() {
       baseURL,
       email,
       password,
+      viewerEmail,
+      viewerPassword,
+      viewerPodName,
+      viewerPodUrl,
+      viewerWebId,
       podName,
       podUrl,
       webId,
@@ -125,7 +163,7 @@ async function main() {
     }
 
     await mkdir(resolve(profileFile, '..'), { recursive: true })
-    await writeFile(profileFile, `@prefix foaf: <http://xmlns.com/foaf/0.1/>.\n@prefix schema: <http://schema.org/>.\n@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n@prefix vcard: <http://www.w3.org/2006/vcard/ns#>.\n${profileFixture(webId, baseURL.replace(/\/$/, ''))}`)
+    await writeFile(profileFile, `@prefix foaf: <http://xmlns.com/foaf/0.1/>.\n@prefix pim: <http://www.w3.org/ns/pim/space#>.\n@prefix schema: <http://schema.org/>.\n@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n@prefix vcard: <http://www.w3.org/2006/vcard/ns#>.\n${profileFixture(webId, baseURL.replace(/\/$/, ''), podUrl)}`)
     log(`Seeded profile fixture at ${profileFile}`)
 
     log(`Opening seeded profile before authentication: ${profileUrl}#me`)
@@ -151,30 +189,40 @@ async function main() {
     }
     await page.locator('#authorize:not([disabled])').waitFor({ state: 'visible' })
     log('Consent authorize button is enabled')
-    const authenticatedProfileFetch = page.waitForResponse((response) =>
-      response.url() === profileUrl && response.ok()
-    )
     await page.getByRole('button', { name: 'Authorize', exact: true }).click()
     log('Submitted authorization consent')
     await page.waitForURL((url) => url.origin === new URL(baseURL).origin && !url.pathname.startsWith('/.account/'))
     log(`Returned to application after authorization: ${page.url()}`)
-    await authenticatedProfileFetch
-    log('Authenticated profile response received')
-    await page.waitForTimeout(5_000)
-    await page.goto(`${profileUrl}#me`, { waitUntil: 'networkidle' })
+    await page.waitForFunction(async ({ expectedWebId, resourceUrl }) => {
+      const session = window.SolidLogic?.authSession
+      const authenticatedFetch = session?.authFetch || session?.fetch
+      if (!session?.info?.isLoggedIn || session.info.webId !== expectedWebId || !authenticatedFetch) {
+        return false
+      }
+      const response = await authenticatedFetch.call(session, resourceUrl)
+      return response.ok
+    }, { expectedWebId: webId, resourceUrl: profileUrl })
+    log('Authenticated OIDC session can read the disposable profile')
+
+    await page.goto(`${profileUrl}#me`, { waitUntil: 'domcontentloaded' })
     log(`Reloaded authenticated profile: ${page.url()}`)
-    await page.getByLabel('Add or edit heading information').waitFor()
-    log('Authenticated profile UI is ready')
+    await selectFolderPaneAudiences(page, preferencesUrl)
 
     await context.storageState({ path: storageState })
     await writeFile(runtimeFile, JSON.stringify({
       baseURL,
       email,
       password,
+      viewerEmail,
+      viewerPassword,
+      viewerPodName,
+      viewerPodUrl,
+      viewerWebId,
       podName,
       podUrl,
       webId,
       profileUrl,
+      preferencesUrl,
       storageState,
       profileFile,
       seeded: true,
@@ -189,6 +237,35 @@ async function main() {
   } finally {
     await browser.close()
   }
+}
+
+async function selectFolderPaneAudiences (page, preferencesUrl) {
+  log('Opening Preferences from the authenticated account menu')
+  await page.locator('solid-ui-account > solid-ui-menu > button[type="button"]').click()
+  await page.getByText('Preferences', { exact: true }).click()
+  await page.getByRole('heading', { name: 'User types', exact: true }).waitFor()
+
+  const userTypes = page.locator('.classifierBox select[multiple]')
+  await userTypes.waitFor({ state: 'visible' })
+  const audienceValues = await userTypes.locator('option').evaluateAll(options =>
+    options
+      .filter(option => /^(power user|developer)$/i.test(option.textContent?.trim() || ''))
+      .map(option => option.getAttribute('value') || option.textContent?.trim() || '')
+  )
+  if (audienceValues.length !== 2) {
+    throw new Error(`Preferences UI did not expose Power User and Developer options: ${await userTypes.locator('option').allTextContents()}`)
+  }
+  await userTypes.selectOption(audienceValues)
+
+  await page.waitForFunction(async (url) => {
+    const session = window.SolidLogic?.authSession
+    const authenticatedFetch = session?.authFetch || session?.fetch
+    const response = await authenticatedFetch?.call(session, url)
+    if (!response?.ok) return false
+    const turtle = await response.text()
+    return turtle.includes('PowerUser') && turtle.includes('Developer')
+  }, preferencesUrl)
+  log('Persisted Power User and Developer audiences through Preferences')
 }
 
 main().catch((error) => {

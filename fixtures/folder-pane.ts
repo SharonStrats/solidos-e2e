@@ -79,6 +79,16 @@ export async function seedNestedFolderPaneCase (
   return { levels, fileUrl }
 }
 
+export async function seedFriendProfile (
+  page: Page,
+  containerUrl: string
+): Promise<string> {
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const profileUrl = new URL(`folder-pane-friend-${runId}.ttl`, containerUrl).toString()
+  await putResource(page, profileUrl, '<#me> a <http://xmlns.com/foaf/0.1/Person>.\n', 'text/turtle')
+  return `${profileUrl}#me`
+}
+
 export async function seedSearchFolderPaneCase (
   page: Page,
   containerUrl: string

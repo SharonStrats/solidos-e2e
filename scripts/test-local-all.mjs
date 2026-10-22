@@ -24,7 +24,9 @@ const environment = {
   E2E_PIVOT_DATA_ROOT: pivotDataRoot,
   E2E_RUN_SMOKE: 'true',
   E2E_RUN_LOCAL_PROFILE: 'true',
-  E2E_USE_LOCAL_RUNTIME: 'true'
+  E2E_USE_LOCAL_RUNTIME: 'true',
+  E2E_RUN_PROFILE_NAVIGATION: 'true',
+  E2E_RUN_DATABROWSER: 'true'
 }
 
 async function requireRunningApplication() {

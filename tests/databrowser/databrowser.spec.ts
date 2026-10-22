@@ -1,7 +1,12 @@
 import { expect, test } from '../../fixtures/test.js'
 import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
 import { getLocalRuntime } from '../../fixtures/local-runtime.js'
-import { seedDatabrowserResources, type DatabrowserSeed } from '../../fixtures/databrowser.js'
+import {
+  readAuthenticatedResource,
+  seedDatabrowserResources,
+  writeAuthenticatedResource,
+  type DatabrowserSeed
+} from '../../fixtures/databrowser.js'
 
 test.describe('mashlib databrowser representation', () => {
   test('serves the static databrowser shell and representation markers', async ({ request }) => {
@@ -71,6 +76,76 @@ test.describe('authenticated mashlib databrowser', () => {
     expect(new URL(page.url()).pathname).toBe(new URL(seed.textUrl).pathname)
   })
 
+  test('opens a pane through the owning Databrowser explorer provider', async ({ page }) => {
+    await page.goto(seed.documentUrl, { waitUntil: 'domcontentloaded' })
+    const provider = page.locator('#OutlineView solid-ui-file-explorer-provider').first()
+    await expect(provider).toHaveCount(1)
+
+    await provider.evaluate((element, htmlUrl) => {
+      const paneProvider = element as HTMLElement & {
+        openPane?: (subject: { uri: string, doc: () => unknown }, paneName: string) => void
+      }
+      const subject = { uri: htmlUrl, doc: () => subject }
+      if (!paneProvider.openPane) throw new Error('Databrowser explorer provider has no openPane callback.')
+      paneProvider.openPane(subject, 'humanReadable')
+    }, seed.htmlUrl)
+
+    await expect(provider.locator('iframe[name="solidos-human-readable-preview"]')).toHaveCount(1)
+  })
+
+  test('enters an expanded object at its first property', async ({ page }) => {
+    await page.goto(seed.documentUrl, { waitUntil: 'domcontentloaded' })
+    const object = page.locator(
+      `#OutlineView [data-outline-node="object"][about="<${seed.subjectUrl}-creator>"]`
+    )
+    await expect(object).toHaveCount(1)
+
+    await object.focus()
+    await page.keyboard.press('ArrowRight')
+
+    const provider = object.locator(':scope > solid-ui-file-explorer-provider')
+    await expect(provider).toHaveCount(1)
+    await expect(provider.locator('[data-outline-node="object"].selected').first()).toBeVisible()
+  })
+
+  test('leaves an expanded object with Left without collapsing its enclosing resource', async ({ page }) => {
+    await page.goto(seed.documentUrl, { waitUntil: 'domcontentloaded' })
+    const object = page.locator(
+      `#OutlineView [data-outline-node="object"][about="<${seed.subjectUrl}-creator>"]`
+    )
+    await object.focus()
+    await page.keyboard.press('ArrowRight')
+
+    const provider = object.locator(':scope > solid-ui-file-explorer-provider')
+    await expect(provider).toHaveCount(1)
+    await expect(provider.locator('[data-outline-node="object"].selected').first()).toBeVisible()
+
+    await page.keyboard.press('ArrowLeft')
+
+    await expect(object).toHaveCount(1)
+    await expect(object.locator(':scope > solid-ui-file-explorer-provider')).toHaveCount(0)
+    await expect(page.locator('#OutlineView')).toContainText('Databrowser E2E resource')
+  })
+
+  test('shift-clicks an RDF object into the outer Databrowser view', async ({ page }) => {
+    await page.goto(seed.documentUrl, { waitUntil: 'domcontentloaded' })
+    const object = page.locator(
+      `#OutlineView [data-outline-node="object"][about="<${seed.subjectUrl}-creator>"]`
+    )
+    await expect(object).toHaveCount(1)
+
+    await object.locator('img[alt="expand"]').click({ modifiers: ['Shift'] })
+
+    await expect(page.locator('#OutlineView solid-ui-file-explorer-provider')).toHaveAttribute(
+      'about',
+      `<${seed.subjectUrl}-creator>`
+    )
+    await expect(page.locator('#OutlineView .outline-subject-block')).toHaveAttribute(
+      'about',
+      `<${seed.subjectUrl}-creator>`
+    )
+  })
+
   test('follows a browser subject link and restores the previous subject with back', async ({ page }) => {
     await page.goto(seed.documentUrl, { waitUntil: 'domcontentloaded' })
     await expect.poll(async () => page.locator('#OutlineView').innerText()).toContain('Databrowser E2E resource')
@@ -85,5 +160,46 @@ test.describe('authenticated mashlib databrowser', () => {
     expect(new URL(page.url()).pathname).toBe(new URL(seed.documentUrl).pathname)
     expect(page.url()).not.toContain(getLocalRuntime().password)
     expect(await page.locator('body').innerText()).not.toContain(getLocalRuntime().password)
+  })
+
+  test('renders Databrowser HTML in an isolated preview and mediates only the current document save', async ({ page }) => {
+    await page.goto(seed.htmlUrl, { waitUntil: 'domcontentloaded' })
+
+    const preview = page.locator('iframe[name="solidos-human-readable-preview"]')
+    await expect(preview).toHaveCount(1)
+    await expect(preview).toHaveAttribute(
+      'sandbox',
+      'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals'
+    )
+    await expect(preview).toHaveAttribute('srcdoc', /Databrowser E2E HTML preview/)
+
+    await expect.poll(() => readAuthenticatedResource(page, seed.htmlUrl)).toContain(
+      'Dokieli exact-document save completed.'
+    )
+    await expect.poll(() => readAuthenticatedResource(page, seed.otherUrl)).toContain(
+      'This resource must remain unchanged.'
+    )
+  })
+
+  test('uses the actual MIME type when cached metadata identifies a resource as non-HTML', async ({ page }) => {
+    await page.goto(seed.mimeMismatchUrl, { waitUntil: 'domcontentloaded' })
+    const preview = page.locator('iframe[name="solidos-human-readable-preview"]')
+    await expect(preview).toHaveAttribute('src', /blob:/)
+    await expect(preview).toHaveAttribute('sandbox', /allow-scripts/)
+
+    await writeAuthenticatedResource(
+      page,
+      seed.mimeMismatchUrl,
+      '<!doctype html><html><body><script>window.parent.compromised = true</script><h1>Actual HTML response</h1></body></html>',
+      'text/html'
+    )
+    await page.reload({ waitUntil: 'domcontentloaded' })
+
+    await expect(preview).toHaveAttribute('srcdoc', /Actual HTML response/)
+    await expect(preview).toHaveAttribute(
+      'sandbox',
+      'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals'
+    )
+    await expect(preview).not.toHaveAttribute('src', /blob:/)
   })
 })

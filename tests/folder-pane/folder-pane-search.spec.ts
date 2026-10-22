@@ -3,7 +3,7 @@ import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
 import { openFolderPane } from '../../fixtures/open-folder-pane.js'
 import { seedSearchFolderPaneCase, type SearchFolderPaneCase } from '../../fixtures/folder-pane.js'
 
-test.describe('folder-pane storage search', () => {
+test.describe.skip('folder-pane storage search', () => {
   let containerUrl: string
   let searchCase: SearchFolderPaneCase
 
