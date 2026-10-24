@@ -1,14 +1,36 @@
 import { request } from '@playwright/test'
-import { readdir, readFile, rm } from 'node:fs/promises'
+import { access, readdir, readFile, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
 const runtimeFile = resolve(process.env.E2E_RUNTIME_FILE || '.e2e-runtime.json')
 const pivotDataRoot = process.env.E2E_PIVOT_DATA_ROOT
 
+async function removeDisposableMetadata (directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    const path = resolve(directory, entry.name)
+    if (entry.isDirectory()) {
+      await removeDisposableMetadata(path)
+      continue
+    }
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+    const content = await readFile(path, 'utf8').catch(() => '')
+    if (content.includes('e2e-')) {
+      await rm(path, { force: true })
+    }
+  }
+}
+
 async function main() {
   const runtime = JSON.parse(await readFile(runtimeFile, 'utf8'))
-  const storageState = JSON.parse(await readFile(runtime.storageState, 'utf8'))
+  let storageState = { cookies: [] }
+  try {
+    await access(runtime.storageState)
+    storageState = JSON.parse(await readFile(runtime.storageState, 'utf8'))
+  } catch {
+    // Setup may fail before Playwright has written storage state. The account
+    // and pod cleanup below can still proceed with an unauthenticated API.
+  }
   const cookies = storageState.cookies || []
   const cookieHeader = cookies.map(({ name, value }) => `${name}=${value}`).join('; ')
   const api = await request.newContext({
@@ -60,12 +82,19 @@ async function main() {
       })
       if (loginsResponse.ok()) {
         const { passwordLogins = {} } = await loginsResponse.json()
-        for (const login of [runtime.email, runtime.viewerEmail].filter(Boolean)) {
-          const loginDeleteUrl = passwordLogins[login]
+        const disposableLogins = process.env.E2E_CLEANUP_ALL_DISPOSABLE_PODS === 'true'
+          ? Object.entries(passwordLogins)
+            .filter(([login]) => login.startsWith('e2e-'))
+            .map(([login, loginDeleteUrl]) => [login, loginDeleteUrl])
+          : [runtime.email, runtime.viewerEmail]
+            .filter(Boolean)
+            .map(login => [login, passwordLogins[login]])
+
+        for (const [login, loginDeleteUrl] of disposableLogins) {
           if (loginDeleteUrl) {
             const deletedLogin = await api.delete(loginDeleteUrl)
             if (!deletedLogin.ok()) {
-              cleanupWarning = `Could not delete test login: HTTP ${deletedLogin.status()}`
+              cleanupWarning = `Could not delete test login ${login}: HTTP ${deletedLogin.status()}`
             }
           }
         }
@@ -78,6 +107,9 @@ async function main() {
     if (pivotDataRoot && runtime.podName.startsWith('e2e-')) {
       await rm(resolve(pivotDataRoot, runtime.podName), { force: true, recursive: true })
     }
+    if (pivotDataRoot && runtime.viewerPodName?.startsWith('e2e-')) {
+      await rm(resolve(pivotDataRoot, runtime.viewerPodName), { force: true, recursive: true })
+    }
     if (process.env.E2E_CLEANUP_ALL_DISPOSABLE_PODS === 'true') {
       if (pivotDataRoot) {
         for (const entry of await readdir(pivotDataRoot, { withFileTypes: true })) {
@@ -85,6 +117,7 @@ async function main() {
             await rm(resolve(pivotDataRoot, entry.name), { force: true, recursive: true })
           }
         }
+        await removeDisposableMetadata(resolve(pivotDataRoot, '.internal'))
       }
 
       const storageStateDirectory = resolve(runtimeFile, '..', 'storage-state')

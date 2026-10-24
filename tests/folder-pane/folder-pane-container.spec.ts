@@ -94,6 +94,31 @@ test.describe('folder-pane container presentation', () => {
   })
 
   for (const view of ['grid', 'list'] as const) {
+    test(`shows header Manage Access icon for file resources in desktop ${view} view`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 })
+      await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
+      const container = page.locator('folder-pane-container')
+      const resource = container.getByRole('option').filter({
+        hasNot: container.locator('.resource-grid-icon--container, .resource-list-icon--container')
+      }).first()
+      await resource.click()
+      const header = page.locator('solid-ui-file-explorer-header')
+      await expect(header.getByTitle('Manage Access')).toBeVisible()
+    })
+
+    test(`hides header Manage Access icon and keeps menu action on mobile ${view} view`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 })
+      await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
+      const container = page.locator('folder-pane-container')
+      await expect(page.locator('solid-ui-file-explorer-header').getByTitle('Manage Access')).toHaveCount(0)
+      const resource = container.getByRole('option').filter({
+        hasNot: container.locator('.resource-grid-icon--container, .resource-list-icon--container')
+      }).first()
+      await expect(page.locator('solid-ui-file-explorer-header').getByTitle('Manage Access')).toHaveCount(0)
+      await resource.getByTitle('More options').click()
+      await expect(page.getByRole('menuitem', { name: 'Manage Access', exact: true })).toBeVisible()
+    })
+
     test(`exposes Manage Access for file resources in ${view} view`, async ({ page }) => {
       await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
 
@@ -353,6 +378,9 @@ test.describe('folder-pane container presentation', () => {
   })
 
   test('creates a Dokieli document from Add, opens it in Dokieli and saves an edit', async ({ page }) => {
+    test.setTimeout(120_000)
+    page.on('console', message => console.log(`[dokieli-console:${message.type()}] ${message.text()}`))
+    page.on('pageerror', error => console.log(`[dokieli-pageerror] ${error.stack || error.message}`))
     const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
     const documentName = `folder-pane-dokieli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const documentUrl = new URL(`${encodeURIComponent(documentName)}.html`, containerUrl).toString()
@@ -407,8 +435,11 @@ test.describe('folder-pane container presentation', () => {
       const frame = provider.locator('iframe')
       // Dokieli runs as the document itself: at the document URL, not a nested SolidOS shell.
       const framed = provider.frameLocator('iframe')
+      console.log('[dokieli-e2e] waiting for rendered heading')
       await expect(framed.locator('h1', { hasText: documentName }).first()).toBeVisible()
+      console.log('[dokieli-e2e] rendered heading')
       await expect(framed.locator('#MainContent, solid-ui-header, folder-pane-sidebar')).toHaveCount(0)
+      console.log('[dokieli-e2e] isolated document assertions')
       await expect(frame).toHaveAttribute('sandbox', /allow-scripts/)
       await expect(frame).not.toHaveAttribute('sandbox', /allow-same-origin/)
       await expect(frame).toHaveAttribute('srcdoc', /<base href=/)
@@ -443,6 +474,7 @@ test.describe('folder-pane container presentation', () => {
       expect(layout.paneScrollsVertically).toBe(false)
       expect(Math.round(layout.rightInset)).toBe(40)
       expect(layout.frameBottomInsidePane).toBe(true)
+      console.log('[dokieli-e2e] layout assertions')
 
       // Use Dokieli: enable its editor, change the heading and save through the SolidOS session.
       const editedHeading = `${documentName} edited in Dokieli`
@@ -457,32 +489,58 @@ test.describe('folder-pane container presentation', () => {
       })
       await page.keyboard.type(' edited in Dokieli')
       await expect(framed.locator('h1').first()).toHaveText(editedHeading)
+      console.log('[dokieli-e2e] edited heading')
+      const documentRequests: string[] = []
+      page.on('request', request => {
+        if (request.url().startsWith(documentUrl)) {
+          documentRequests.push(`${request.method()} ${request.url()}`)
+        }
+      })
       const saveResponse = page.waitForResponse(response =>
         response.request().method() === 'PUT' && response.url() === documentUrl
-      )
+      , { timeout: 10000 })
+      console.log('[dokieli-e2e] waiting for save')
       await framed.getByTitle('Open menu').click()
       await framed.locator('#document-menu button.resource-save').click()
-      expect((await saveResponse).ok()).toBe(true)
+      console.log('[dokieli-e2e] clicked save')
+      let savedResponse
+      try {
+        savedResponse = await saveResponse
+      } catch (error) {
+        throw new Error(`Dokieli save did not reach the exact document: ${documentRequests.join(', ')}`, { cause: error })
+      }
+      expect(savedResponse.ok()).toBe(true)
+      console.log('[dokieli-e2e] save response received')
       const saved = await page.evaluate(async (url) => {
         const session = (window as typeof window & {
           SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
         }).SolidLogic?.authSession
         const authenticatedFetch = session?.authFetch ?? session?.fetch
         if (!authenticatedFetch) throw new Error('The Dokieli test has no authenticated Solid session.')
-        return (await authenticatedFetch.call(session, url)).text()
+        const response = await authenticatedFetch.call(session, url, {
+          signal: AbortSignal.timeout(10_000)
+        })
+        return response.text()
       }, documentUrl)
+      console.log('[dokieli-e2e] verified saved content')
       expect(saved).toContain(`<h1>${editedHeading}</h1>`)
       await page.locator('folder-pane-sidebar li[aria-label="Home"] > .resource-row').click()
       const resource = page.locator(`folder-pane-container li[role="option"][about="<${documentUrl}>"]`)
       await expect(resource).toHaveCount(1)
       await expect(resource.locator('.resource-grid-icon--container')).toHaveCount(0)
     } finally {
+      if (page.isClosed()) return
       await page.evaluate(async (url) => {
         const session = (window as typeof window & {
           SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
         }).SolidLogic?.authSession
         const authenticatedFetch = session?.authFetch ?? session?.fetch
-        if (authenticatedFetch) await authenticatedFetch.call(session, url, { method: 'DELETE' })
+        if (authenticatedFetch) {
+          await authenticatedFetch.call(session, url, {
+            method: 'DELETE',
+            signal: AbortSignal.timeout(10_000)
+          })
+        }
       }, documentUrl)
     }
   })

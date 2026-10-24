@@ -33,7 +33,7 @@ test.describe('authenticated local profile mutations', () => {
     console.log(`[e2e ${new Date().toISOString()}] Re-authenticating profile owner: ${test.info().title}`)
     await authenticateProfileOwner(page)
     console.log(`[e2e ${new Date().toISOString()}] Profile loaded: ${page.url()}`)
-    await expect(page.getByLabel('Add or edit heading information')).toBeVisible()
+    await expect(page.getByLabel('Add or edit heading information').first()).toBeVisible()
     console.log(`[e2e ${new Date().toISOString()}] Authenticated profile UI ready for: ${test.info().title}`)
   })
 
@@ -55,7 +55,7 @@ test.describe('authenticated local profile mutations', () => {
     const runtime = getLocalRuntime()
     const updatedName = 'E2E Updated Profile'
 
-    await page.getByLabel('Add or edit heading information').click()
+    await page.getByLabel('Add or edit heading information').first().click()
     await page.locator('input[name="name"]').fill(updatedName)
     await saveDialog(page)
     await expect.poll(async () => hasLiteral(
@@ -73,7 +73,7 @@ test.describe('authenticated local profile mutations', () => {
     await page.reload({ waitUntil: 'networkidle' })
     await expect(page.getByRole('heading', { name: updatedName, level: 1 })).toBeVisible()
 
-    await page.getByLabel('Add or edit heading information').click()
+    await page.getByLabel('Add or edit heading information').first().click()
     await page.locator('input[name="name"]').fill(seededName)
     await saveDialog(page)
     await page.reload({ waitUntil: 'networkidle' })
@@ -313,13 +313,14 @@ test.describe('authenticated local profile mutations', () => {
 
     await page.getByLabel('Add or edit languages').click()
     await page.getByLabel('Add another language').click()
-    await selectLanguage(page, 2, 'French', 'https://www.w3.org/ns/iana/language-code/fr')
+    await selectLanguage(page, 0, 'French', 'https://www.w3.org/ns/iana/language-code/fr')
     await saveDialog(page)
     await expect.poll(async () => languageOrder(await readPersistedProfile(page), runtime.webId))
-      .toEqual(['en', 'es', 'fr'])
+      .toEqual(['fr', 'en', 'es'])
 
+    await page.reload({ waitUntil: 'networkidle' })
     await page.getByLabel('Add or edit languages').click()
-    await page.getByLabel('Delete language 3').click()
+    await page.getByLabel('Delete language 1').click()
     await saveDialog(page)
     await expect.poll(async () => languageOrder(await readPersistedProfile(page), runtime.webId))
       .toEqual(['en', 'es'])
@@ -331,14 +332,15 @@ test.describe('authenticated local profile mutations', () => {
 
     await page.getByLabel('Edit social accounts').click()
     await page.getByLabel('Add another social account').click()
-    await selectSocialAccount(page, 2, 'LinkedIn')
-    await page.locator('input[name="social-homepage-2"]').fill(homepage)
+    await selectSocialAccount(page, 0, 'LinkedIn')
+    await page.locator('input[name="social-homepage-0"]').fill(homepage)
     await saveDialog(page)
     await expect.poll(async () => socialOrder(await readPersistedProfile(page), runtime.webId))
-      .toEqual(['GitHub', 'Facebook', 'LinkedIn'])
+      .toEqual(['LinkedIn', 'GitHub', 'Facebook'])
 
+    await page.reload({ waitUntil: 'networkidle' })
     await page.getByLabel('Edit social accounts').click()
-    await page.getByLabel('Delete social account 3').click()
+    await page.getByLabel('Delete social account 1').click()
     await saveDialog(page)
     await expect.poll(async () => socialOrder(await readPersistedProfile(page), runtime.webId))
       .toEqual(['GitHub', 'Facebook'])
@@ -427,7 +429,11 @@ function languageOrder(profile: Awaited<ReturnType<typeof readPersistedProfile>>
 }
 
 function socialOrder(profile: Awaited<ReturnType<typeof readPersistedProfile>>, webId: string): string[] {
-  return rdfListMembers(profile, webId, `${rdf.foaf}account`).map((node) =>
-    profile.find((quad) => quad.subject.value === node && quad.predicate.value === `${rdf.foaf}name`)?.object.value || ''
-  )
+  return rdfListMembers(profile, webId, `${rdf.foaf}account`).map((node) => {
+    const type = profile.find((quad) =>
+      quad.subject.value === node && quad.predicate.value === `${rdf.rdf}type`
+    )?.object.value
+    const accountType = type?.split('#').at(-1)?.replace(/Account$/, '') || ''
+    return accountType === 'Github' ? 'GitHub' : accountType
+  })
 }

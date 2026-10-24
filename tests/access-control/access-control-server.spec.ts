@@ -355,6 +355,13 @@ test.describe('server-side ACL authorization', () => {
   test.use({ actionTimeout: 15_000, navigationTimeout: 30_000 })
   test.setTimeout(180_000)
 
+  test.beforeEach(async () => {
+    test.skip(
+      process.env.E2E_RUN_ACCESS_CONTROL_SERVER !== 'true',
+      'Set E2E_RUN_ACCESS_CONTROL_SERVER=true to run server-side ACL authorization coverage.'
+    )
+  })
+
   test.beforeEach(async ({ page, viewer }) => {
     if (!hasConfiguredViewerUser()) {
       throw new Error('Server-side ACL tests require viewer credentials. Run setup:local for the default localhost:3100 runtime, or set E2E_VIEWER_* for an external server.')

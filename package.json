@@ -15,6 +15,7 @@
     "test:access-control": "node scripts/test-access-control.mjs",
     "test:access-control:server": "node scripts/test-access-control-server.mjs",
     "test:folder-pane": "node scripts/test-folder-pane.mjs",
+    "test:navigation": "node scripts/test-navigation.mjs",
     "check-config": "node scripts/check-config.mjs",
     "setup:local": "node scripts/setup-local.mjs",
     "cleanup:local": "node scripts/cleanup-local.mjs",

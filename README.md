@@ -7,6 +7,10 @@ workflow. The public profile-read tests use
 `https://sharon.pivot-test.solidproject.org:3000/profile/card#me` by default and
 can be overridden with `E2E_PROFILE_URL`.
 
+`npm run test:all` prints passed, failed, and skipped counts for each workflow
+and a consolidated total. When tests fail, it also lists each failed title and
+its spec location. The command preserves a failing workflow's exit status.
+
 Standalone Playwright tests for the SolidOS browser application. The suite is
 kept separate from the SolidOS application workspace so it can test a running
 deployment without changing application dependencies or source code.
@@ -210,16 +214,13 @@ npm run test:access-control:server
 ```
 
 The suite authenticates the owner and viewer in the browser and removes
-per-test resources after use. For local disposable runs, cleanup also removes
-the disposable pods, their local Pivot fixture directories, runtime JSON, and
-saved browser-state files when those can be identified. It is **not reliable
-account-identity cleanup**: the current CSS v7 account API has no account
-deletion endpoint and requires at least one password login. The cleanup script
-attempts to delete generated password logins, but the API may reject deleting
-the last login with HTTP 400. In that case, pod/data cleanup can succeed while
-the owner and viewer identities remain; a warning may be printed even when the
-wrapper exits with code 0. Do not interpret a “cleaned” summary line as proof
-that test logins were removed.
+per-test resources after use. For local disposable runs, cleanup removes the
+disposable pods, their local Pivot fixture directories, runtime JSON, saved
+browser-state files, and all Pivot account/OIDC JSON records whose contents
+identify them as disposable `e2e-*` identities. It also attempts the account
+API deletion first; CSS v7 may reject deletion of the final password login
+with HTTP 400, so the targeted local metadata cleanup is the fallback for
+these local test identities. Non-E2E account and pod data is not removed.
 
 Results depend on the running SolidOS deployment, linked workspace builds, and
 the configured disposable runtime. This README does not claim that the current
@@ -397,6 +398,56 @@ Set `E2E_PROFILE_URL` to a readable public profile for the logged-out test.
 Friend-button add/already-friend coverage additionally requires
 `E2E_FRIEND_PROFILE_URL` and `E2E_FRIEND_TARGET_WEBID`; without those values that
 single two-user test is skipped.
+
+### Navigation and view matrix
+
+The navigation matrix is implemented in
+`tests/navigation/navigation-and-view.spec.ts` and covers the cases documented
+in `../../mydocs/SolidosNavigationAndView.md`, including:
+
+- the logged-in user's root, storage, profile, and standalone resource views;
+- account-menu navigation to Profile, Friends, and Storage;
+- the distinction between the logged-in user's Storage view and another user's
+  Storage view;
+- the file-explorer header being visible for the logged-in user's Storage view;
+- the file-explorer header being absent from another user's Storage tab;
+- other-user Profile/Friends/Storage tab switching;
+- logged-in and logged-out friend actions; and
+- the Add as friend to Already a friend state transition.
+
+Unlike the older profile-navigation command, this workflow does not require
+manual account creation, target URL configuration, profile seeding, or cleanup.
+It creates a disposable owner and viewer account for the selected port, creates
+both pods, seeds both profiles, creates a standalone HTML resource, runs the
+navigation tests, and removes the created accounts, pods, seed directories,
+runtime JSON, and Playwright storage state afterward.
+
+The application server must already be running. Run the workflow once for each
+topology:
+
+```bash
+E2E_BASE_URL=http://localhost:3100 npm run test:navigation
+E2E_BASE_URL=http://localhost:3200 npm run test:navigation
+```
+
+Each run uses the data directory configured by its running Pivot instance and
+only creates disposable `e2e-*` accounts/pods. Cleanup removes those entries
+without deleting the shared directory:
+
+```text
+.e2e-navigation-3100.json
+../pivot/data/
+
+.e2e-navigation-3200.json
+../pivot/data-subdomain/
+```
+
+The workflow always attempts cleanup in a `finally` block, including when the
+browser tests fail. Disposable cleanup is enabled by default and the two runs
+must not share a runtime file or pod data directory. Setup writes provisional
+runtime state immediately after registration, so failures during pod or viewer
+creation still leave enough information for cleanup. The only setup required
+from the user is starting the SolidOS servers on ports 3100 and 3200.
 
 #### Access-control scenario and identity notes
 
@@ -708,10 +759,8 @@ Extra Playwright arguments can be passed after `--`, for example
 `npm run test:folder-pane -- --headed`.
 
 Cleanup removes disposable E2E pods, their local Pivot fixture directories,
-and saved authentication-state files where available. As with the ACL server
-runner, this is resource/pod cleanup, not guaranteed identity cleanup: deleting
-the final password login may be rejected by the CSS v7 account API with HTTP
-400, and the account can remain.
+matching local account/OIDC metadata, and saved authentication-state files.
+It never removes non-E2E records.
 
 The command runs these five suites serially:
 

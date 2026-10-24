@@ -95,7 +95,7 @@ test.describe('folder-pane resource selection', () => {
     }
   })
 
-  test('queues an early source-pane editing action until the editor is ready', async ({ page }) => {
+  test('edits, saves, and rejects invalid source-pane content', async ({ page }) => {
     test.skip(
       process.env.E2E_RUN_FOLDER_PANE !== 'true',
       'Set E2E_RUN_FOLDER_PANE=true to run folder-pane coverage.'
@@ -126,10 +126,50 @@ test.describe('folder-pane resource selection', () => {
       editorProvider.value?.beginEditing?.()
     })
 
-    await expect(provider.locator('source-pane-source-editor-card .sourcePaneSaveButton')).toBeVisible()
-    await expect(provider.locator('source-pane-source-editor-card .sourcePaneCancelButton')).toBeVisible()
+    const editor = provider.locator('source-pane-source-editor-card')
+    await expect(editor.locator('.sourcePaneSaveButton')).toBeVisible()
+    await expect(editor.locator('.sourcePaneCancelButton')).toBeVisible()
+
+    const content = editor.locator('.cm-content')
+    await content.click()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+    await page.keyboard.type('export const seeded = false\n')
+    await editor.locator('.sourcePaneSaveButton').click()
+
+    await expect.poll(async () => readAuthenticatedResource(page, sourceCase.resourceUrl))
+      .toContain('export const seeded = false')
+    await expect(editor.locator('.sourcePaneSaveButton')).toHaveCount(0)
+
+    await provider.evaluate((element) => {
+      const editorProvider = element as HTMLElement & {
+        value?: { beginEditing?: () => void }
+      }
+      editorProvider.value?.beginEditing?.()
+    })
+    await expect(editor.locator('.sourcePaneSaveButton')).toBeVisible()
+    await content.click()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+    await page.keyboard.type('export const = invalid\n')
+    await editor.locator('.sourcePaneSaveButton').click()
+
+    await expect(page.locator('.sourcePaneStatus')).toContainText('Syntax error: fix the document before saving.')
+    await expect.poll(async () => readAuthenticatedResource(page, sourceCase.resourceUrl))
+      .toContain('export const seeded = false')
   })
 })
+
+async function readAuthenticatedResource (page: Page, url: string): Promise<string> {
+  return page.evaluate(async resourceUrl => {
+    const session = (window as typeof window & {
+      SolidLogic?: { authSession?: { authFetch?: typeof fetch, fetch?: typeof fetch } }
+    }).SolidLogic?.authSession
+    const fetcher = session?.authFetch ?? session?.fetch
+    if (!fetcher) throw new Error('The folder-pane test has no authenticated Solid session.')
+    const response = await fetcher.call(session, resourceUrl)
+    if (!response.ok) throw new Error(`Could not read ${resourceUrl}: ${response.status}`)
+    return response.text()
+  }, url)
+}
 
 async function seedScrollablePaneResources (page: Page, containerUrl: string): Promise<Array<{ url: string, paneName: string }>> {
   return page.evaluate(async (container) => {

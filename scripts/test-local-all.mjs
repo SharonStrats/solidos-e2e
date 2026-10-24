@@ -3,6 +3,11 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
+if (process.env.E2E_EXTERNAL_SERVER === 'true' || !/^https?:\/\/localhost:3100\/?$/.test(baseURL)) {
+  console.error('[e2e-local] The local workflow requires SolidOS at http://localhost:3100.')
+  console.error('[e2e-local] Use npm run test:all with E2E_EXTERNAL_SERVER=true for an external target.')
+  process.exit(1)
+}
 const publicProfileURL = process.env.E2E_PROFILE_URL || 'https://sharon.pivot-test.solidproject.org:3000/profile/card#me'
 const runtimeFile = resolve(process.env.E2E_RUNTIME_FILE || '.e2e-runtime.json')
 const pivotDataRoot = process.env.E2E_PIVOT_DATA_ROOT || resolve('../pivot/data')
@@ -23,10 +28,12 @@ const environment = {
   E2E_BASE_URL: baseURL,
   E2E_PIVOT_DATA_ROOT: pivotDataRoot,
   E2E_RUN_SMOKE: 'true',
+  E2E_RUN_AUTH: 'true',
   E2E_RUN_LOCAL_PROFILE: 'true',
   E2E_USE_LOCAL_RUNTIME: 'true',
   E2E_RUN_PROFILE_NAVIGATION: 'true',
-  E2E_RUN_DATABROWSER: 'true'
+  E2E_RUN_DATABROWSER: 'true',
+  E2E_RUN_ACCESS_CONTROL_SERVER: 'true'
 }
 
 async function requireRunningApplication() {
@@ -40,8 +47,8 @@ async function requireRunningApplication() {
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
-    console.error(`[e2e-local ${new Date().toISOString()}] SolidOS is not available at ${baseURL}: ${reason}`)
-    console.error('[e2e-local] Start SolidOS first; no E2E setup, browser, or watcher will be started.')
+    console.error(`[e2e-local ${new Date().toISOString()}] Server is not running at ${baseURL}: ${reason}`)
+    console.error('[e2e-local] Please start SolidOS at http://localhost:3100, then run the E2E suite again.')
     process.exit(1)
   } finally {
     clearTimeout(timeout)

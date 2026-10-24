@@ -69,7 +69,8 @@ test.describe('profile navigation and friendship flows', () => {
   })
 
   test('shows the logged-in user profile without a self-friend action', async ({ page }) => {
-    await expect(page.getByLabel('Add or edit heading information')).toBeVisible()
+    // Both desktop and mobile variants are rendered; only one is visible.
+    await expect(page.locator('[aria-label="Add or edit heading information"]:visible')).toHaveCount(1)
     await expect(page.getByRole('group', { name: 'Friend relationship actions' })).toHaveCount(0)
   })
 

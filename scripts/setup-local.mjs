@@ -4,8 +4,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
-if (process.env.E2E_EXTERNAL_SERVER === 'true' || !/^https?:\/\/localhost:3100\/?$/.test(baseURL)) {
-  throw new Error('setup:local is only for the disposable localhost:3100 runtime; use E2E_* credentials/profile variables for an external server')
+if (process.env.E2E_EXTERNAL_SERVER === 'true' || !/^https?:\/\/localhost:(3100|3200)\/?$/.test(baseURL)) {
+  throw new Error('setup:local is only for the disposable localhost:3100 or localhost:3200 runtimes')
 }
 const runtimeFile = resolve(process.env.E2E_RUNTIME_FILE || '.e2e-runtime.json')
 const runId = `${Date.now()}-${randomBytes(3).toString('hex')}`
@@ -16,6 +16,15 @@ const viewerEmail = process.env.E2E_VIEWER_USERNAME || `e2e-viewer-${runId}@loca
 const viewerPassword = process.env.E2E_VIEWER_PASSWORD || `E2e-${randomBytes(12).toString('base64url')}!`
 const viewerPodName = process.env.E2E_VIEWER_POD_NAME || `e2e-viewer-${runId}`
 const pivotDataRoot = process.env.E2E_PIVOT_DATA_ROOT || resolve('../pivot/data')
+const storageState = resolve('storage-state', `local-${runId}.json`)
+
+function isApplicationOrigin (url) {
+  const expected = new URL(baseURL)
+  return url.port === expected.port &&
+    url.protocol === expected.protocol &&
+    (url.hostname === expected.hostname ||
+      (expected.hostname === 'localhost' && url.hostname.endsWith('.localhost')))
+}
 
 function profileFixture(webId, issuer, podUrl) {
   const profileDocument = webId.replace(/#me$/, '')
@@ -86,6 +95,18 @@ async function main() {
     await page.getByRole('button', { name: 'Register' }).click()
     await page.waitForURL('**/.account/account/**')
     log(`Registration complete; account page loaded: ${page.url()}`)
+    await mkdir(resolve('storage-state'), { recursive: true })
+    await context.storageState({ path: storageState })
+    await writeFile(runtimeFile, JSON.stringify({
+      baseURL,
+      email,
+      password,
+      podName,
+      storageState,
+      seeded: false,
+      createdAt: new Date().toISOString()
+    }, null, 2))
+    log(`Saved provisional runtime state to ${runtimeFile}`)
 
     await page.waitForFunction(() => Boolean(document.querySelector('#createPod')?.getAttribute('href')))
     log('Opening create-pod flow')
@@ -109,6 +130,22 @@ async function main() {
     log(`WebID created: ${webId}`)
     const profileUrl = new URL('profile/card', podUrl.endsWith('/') ? podUrl : `${podUrl}/`).toString()
     const preferencesUrl = new URL('settings/prefs.ttl', podUrl).toString()
+    await writeFile(runtimeFile, JSON.stringify({
+      baseURL,
+      email,
+      password,
+      viewerEmail,
+      viewerPassword,
+      viewerPodName,
+      podName,
+      podUrl,
+      webId,
+      profileUrl,
+      storageState,
+      seeded: false,
+      createdAt: new Date().toISOString()
+    }, null, 2))
+    log(`Updated runtime state before viewer setup`)
     // The server-side ACL suite needs a real second identity. Keep this
     // account disposable and only persist its credentials in runtime state.
     const viewerPage = await (await browser.newContext()).newPage()
@@ -135,8 +172,9 @@ async function main() {
     const profileFile = pivotDataRoot
       ? resolve(pivotDataRoot, podName, 'profile', 'card$.ttl')
       : null
-    const storageState = resolve('storage-state', `local-${runId}.json`)
-    await mkdir(resolve('storage-state'), { recursive: true })
+    const viewerProfileFile = pivotDataRoot
+      ? resolve(pivotDataRoot, viewerPodName, 'profile', 'card$.ttl')
+      : null
     await context.storageState({ path: storageState })
     await writeFile(runtimeFile, JSON.stringify({
       baseURL,
@@ -147,12 +185,14 @@ async function main() {
       viewerPodName,
       viewerPodUrl,
       viewerWebId,
+      viewerProfileUrl: viewerWebId.replace(/#me$/, ''),
       podName,
       podUrl,
       webId,
       profileUrl,
       storageState,
       profileFile,
+      viewerProfileFile,
       seeded: false,
       createdAt: new Date().toISOString()
     }, null, 2))
@@ -164,6 +204,8 @@ async function main() {
 
     await mkdir(resolve(profileFile, '..'), { recursive: true })
     await writeFile(profileFile, `@prefix foaf: <http://xmlns.com/foaf/0.1/>.\n@prefix pim: <http://www.w3.org/ns/pim/space#>.\n@prefix schema: <http://schema.org/>.\n@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n@prefix vcard: <http://www.w3.org/2006/vcard/ns#>.\n${profileFixture(webId, baseURL.replace(/\/$/, ''), podUrl)}`)
+    await mkdir(resolve(viewerProfileFile, '..'), { recursive: true })
+    await writeFile(viewerProfileFile, `@prefix foaf: <http://xmlns.com/foaf/0.1/>.\n@prefix pim: <http://www.w3.org/ns/pim/space#>.\n@prefix schema: <http://schema.org/>.\n@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n@prefix vcard: <http://www.w3.org/2006/vcard/ns#>.\n${profileFixture(viewerWebId, baseURL.replace(/\/$/, ''), viewerPodUrl)}`)
     log(`Seeded profile fixture at ${profileFile}`)
 
     log(`Opening seeded profile before authentication: ${profileUrl}#me`)
@@ -191,7 +233,7 @@ async function main() {
     log('Consent authorize button is enabled')
     await page.getByRole('button', { name: 'Authorize', exact: true }).click()
     log('Submitted authorization consent')
-    await page.waitForURL((url) => url.origin === new URL(baseURL).origin && !url.pathname.startsWith('/.account/'))
+    await page.waitForURL((url) => isApplicationOrigin(url) && !url.pathname.startsWith('/.account/'))
     log(`Returned to application after authorization: ${page.url()}`)
     await page.waitForFunction(async ({ expectedWebId, resourceUrl }) => {
       const session = window.SolidLogic?.authSession
@@ -208,6 +250,43 @@ async function main() {
     log(`Reloaded authenticated profile: ${page.url()}`)
     await selectFolderPaneAudiences(page, preferencesUrl)
 
+    // Navigation fixtures: a resource, a plain container and a container with an index (an address book)
+    const ownerResourceUrl = new URL('navigation-e2e.html', podUrl).toString()
+    const ownerContainerUrl = new URL('navigation-folder/', podUrl).toString()
+    const ownerIndexedContainerUrl = new URL('navigation-contacts/', podUrl).toString()
+    const navigationFixtures = [
+      {
+        url: ownerResourceUrl,
+        type: 'text/html',
+        body: '<!doctype html><title>Navigation E2E resource</title><main>Navigation resource</main>'
+      },
+      { url: new URL('navigation-note.txt', ownerContainerUrl).toString(), type: 'text/plain', body: 'Navigation note' },
+      {
+        url: new URL('index.ttl', ownerIndexedContainerUrl).toString(),
+        type: 'text/turtle',
+        body: [
+          '@prefix vcard: <http://www.w3.org/2006/vcard/ns#>.',
+          '@prefix dc: <http://purl.org/dc/elements/1.1/>.',
+          '<#this> a vcard:AddressBook; dc:title "Navigation E2E contacts";',
+          '  vcard:nameEmailIndex <people.ttl>; vcard:groupIndex <groups.ttl>.'
+        ].join('\n')
+      },
+      { url: new URL('people.ttl', ownerIndexedContainerUrl).toString(), type: 'text/turtle', body: '' },
+      { url: new URL('groups.ttl', ownerIndexedContainerUrl).toString(), type: 'text/turtle', body: '' }
+    ]
+    await page.evaluate(async ({ fixtures }) => {
+      const session = window.SolidLogic?.authSession
+      const authenticatedFetch = session?.authFetch || session?.fetch
+      for (const fixture of fixtures) {
+        const response = await authenticatedFetch?.call(session, fixture.url, {
+          method: 'PUT',
+          headers: { 'content-type': fixture.type },
+          body: fixture.body
+        })
+        if (!response?.ok) throw new Error(`Could not seed ${fixture.url}: HTTP ${response?.status}`)
+      }
+    }, { fixtures: navigationFixtures })
+
     await context.storageState({ path: storageState })
     await writeFile(runtimeFile, JSON.stringify({
       baseURL,
@@ -218,6 +297,7 @@ async function main() {
       viewerPodName,
       viewerPodUrl,
       viewerWebId,
+      viewerProfileUrl: viewerWebId.replace(/#me$/, ''),
       podName,
       podUrl,
       webId,
@@ -225,6 +305,10 @@ async function main() {
       preferencesUrl,
       storageState,
       profileFile,
+      viewerProfileFile,
+      ownerResourceUrl,
+      ownerContainerUrl,
+      ownerIndexedContainerUrl,
       seeded: true,
       authenticated: true,
       createdAt: new Date().toISOString()

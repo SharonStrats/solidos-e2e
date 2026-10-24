@@ -4,6 +4,7 @@ import type { Page } from '@playwright/test'
 import { getLocalRuntime } from './local-runtime.js'
 
 export const rdf = {
+  rdf: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
   foaf: 'http://xmlns.com/foaf/0.1/',
   schema: 'http://schema.org/',
   solid: 'http://www.w3.org/ns/solid/terms#',

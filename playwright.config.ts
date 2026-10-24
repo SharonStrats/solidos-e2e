@@ -28,7 +28,11 @@ export default defineConfig({
   // Keep those resets non-overlapping without using Playwright's serial mode,
   // which would skip later tests after a failure.
   workers: singleWorker ? 1 : undefined,
-  reporter: process.env.CI ? [['html', { open: 'never' }], ['line']] : [['list']],
+  reporter: process.env.E2E_SUMMARY === 'true'
+    ? [['./scripts/summary-reporter.mjs']]
+    : process.env.CI
+      ? [['html', { open: 'never' }], ['line']]
+      : [['list']],
   use: {
     baseURL,
     // Artifact collection can mask the real failure when a context closes
