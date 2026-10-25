@@ -29,6 +29,27 @@ async function waitForConsentAuthorization(page: Page): Promise<void> {
   await authorizeButton.waitFor({ state: 'visible', timeout })
 }
 
+async function completeIdentityProviderLogin (page: Page, user: TestUser, returnOrigin: string): Promise<void> {
+  if (!user.username || !user.password) {
+    throw new Error('The requested E2E Solid user has no username and password configured.')
+  }
+  await page.waitForURL((url) =>
+    url.pathname.startsWith('/.account/login/password/') ||
+    url.pathname.startsWith('/.account/oidc/consent/'),
+  { waitUntil: 'domcontentloaded' })
+
+  if (page.url().includes('/.account/login/password/')) {
+    await page.getByLabel('Email / username', { exact: true }).fill(user.username)
+    await page.getByLabel('Password', { exact: true }).fill(user.password)
+    await page.getByRole('button', { name: 'Log in', exact: true }).click()
+    await page.waitForURL('**/.account/oidc/consent/**', { waitUntil: 'domcontentloaded' })
+  }
+
+  await waitForConsentAuthorization(page)
+  await page.getByRole('button', { name: 'Authorize', exact: true }).click()
+  await page.waitForURL((url) => url.origin === returnOrigin && !url.pathname.startsWith('/.account/'))
+}
+
 export async function authenticateSolidUser (page: Page, user: TestUser): Promise<void> {
   const runtime = getLocalRuntime()
   const baseURL = new URL(runtime.profileUrl).origin
@@ -65,21 +86,7 @@ export async function authenticateSolidUser (page: Page, user: TestUser): Promis
     localStorage.setItem('preLoginRedirectHash', new URL(window.location.href).hash)
     return session.login(issuer, redirectUrl)
   }, { issuer: `${baseURL}/`, redirectUrl: runtime.profileUrl })
-  await page.waitForURL((url) =>
-    url.pathname.startsWith('/.account/login/password/') ||
-    url.pathname.startsWith('/.account/oidc/consent/'),
-  { waitUntil: 'domcontentloaded' })
-
-  if (page.url().includes('/.account/login/password/')) {
-    await page.getByLabel('Email / username', { exact: true }).fill(user.username)
-    await page.getByLabel('Password', { exact: true }).fill(user.password)
-    await page.getByRole('button', { name: 'Log in', exact: true }).click()
-    await page.waitForURL('**/.account/oidc/consent/**', { waitUntil: 'domcontentloaded' })
-  }
-
-  await waitForConsentAuthorization(page)
-  await page.getByRole('button', { name: 'Authorize', exact: true }).click()
-  await page.waitForURL((url) => url.origin === baseURL && !url.pathname.startsWith('/.account/'))
+  await completeIdentityProviderLogin(page, user, baseURL)
 
   const waitForLogin = () => page.waitForFunction(({ expectedWebId }) => {
     const session = (window as SolidSessionWindow).SolidLogic?.authSession
@@ -111,4 +118,29 @@ export async function authenticateProfileOwner (page: Page): Promise<void> {
     username: runtime.email,
     password: runtime.password
   })
+}
+
+/**
+ * Logs the profile owner in from `pageUrl` the way the login button does: the page itself is
+ * the redirect URL, so the identity provider sends the browser back to it.
+ */
+export async function loginOwnerFromPage (page: Page, pageUrl: string): Promise<void> {
+  const runtime = getLocalRuntime()
+  const user: TestUser = { webId: runtime.webId, username: runtime.email, password: runtime.password }
+  const baseURL = new URL(runtime.profileUrl).origin
+
+  await page.goto(pageUrl, { waitUntil: 'domcontentloaded' })
+  await page.waitForFunction(() => Boolean((window as SolidSessionWindow).SolidLogic?.authSession?.login))
+  await page.evaluate(({ issuer }) => {
+    const session = (window as SolidSessionWindow).SolidLogic?.authSession
+    if (!session?.login) throw new Error('SolidOS authentication session is unavailable.')
+    const redirectUrl = new URL(window.location.href)
+    redirectUrl.hash = ''
+    return session.login(issuer, redirectUrl.href)
+  }, { issuer: `${baseURL}/` })
+  await completeIdentityProviderLogin(page, user, new URL(pageUrl).origin)
+  await page.waitForFunction(({ expectedWebId }) => {
+    const session = (window as SolidSessionWindow).SolidLogic?.authSession
+    return Boolean(session?.info?.isLoggedIn && session.info.webId === expectedWebId)
+  }, { expectedWebId: user.webId })
 }

@@ -101,7 +101,8 @@ async function main () {
       'tests/folder-pane/folder-pane-resources.spec.ts',
       'tests/folder-pane/folder-pane-created-resources.spec.ts',
       'tests/folder-pane/folder-pane-search.spec.ts',
-      'tests/folder-pane/folder-pane-add-menu-panes.spec.ts'
+      'tests/folder-pane/folder-pane-add-menu-panes.spec.ts',
+      'tests/folder-pane/folder-pane-slideshow.spec.ts'
     ]
     const requestedTestFiles = process.argv.slice(2)
     const testFiles = requestedTestFiles.length > 0 ? requestedTestFiles : defaultTestFiles

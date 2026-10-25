@@ -52,9 +52,12 @@ export async function resetLocalProfile(): Promise<void> {
     throw new Error('The local runtime does not include a disposable profile file to reset.')
   }
 
+  // The issuer is the server, not the pod: in subdomain mode the pod has its own origin
+  // (e.g. alice.localhost:3200), and a WebID naming it as issuer makes the server refuse tokens.
+  const issuer = new URL(runtime.baseURL || runtime.profileUrl).origin
   await writeFile(
     runtime.profileFile,
-    seededProfileTurtle(runtime.webId, new URL(runtime.profileUrl).origin, runtime.podUrl)
+    seededProfileTurtle(runtime.webId, issuer, runtime.podUrl)
   )
   console.log(`[e2e ${new Date().toISOString()}] Reset disposable profile file: ${runtime.profileFile}`)
 }

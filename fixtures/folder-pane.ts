@@ -16,6 +16,11 @@ export type SearchFolderPaneCase = {
   unrelatedUrl: string
 }
 
+export type SlideshowFolderPaneCase = {
+  containerUrl: string
+  imageUrls: [string, string]
+}
+
 type MintablePane = {
   name: string
   mintClass: string
@@ -109,6 +114,55 @@ export async function seedSearchFolderPaneCase (
     betaUrl: new URL(names.beta, containerUrl).toString(),
     unrelatedUrl: new URL(names.unrelated, containerUrl).toString()
   }
+}
+
+export async function seedSlideshowFolderPaneCase (
+  page: Page,
+  containerUrl: string
+): Promise<SlideshowFolderPaneCase> {
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const slideshowContainer = await createContainer(page, containerUrl, `slideshow-${runId}`)
+  const imageUrls = [
+    new URL('slide-1.svg', slideshowContainer).toString(),
+    new URL('slide-2.svg', slideshowContainer).toString()
+  ] as [string, string]
+
+  await Promise.all(imageUrls.map((imageUrl, index) =>
+    putResource(
+      page,
+      imageUrl,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"><rect width="640" height="480" fill="${index === 0 ? 'teal' : 'purple'}"/></svg>`,
+      'image/svg+xml'
+    )
+  ))
+
+  const webId = await page.evaluate(() => {
+    const session = (window as typeof window & {
+      SolidLogic?: { authSession?: { info?: { webId?: string } } }
+    }).SolidLogic?.authSession
+    if (!session?.info?.webId) throw new Error('The folder-pane test has no authenticated Solid session.')
+    return session.info.webId
+  })
+  const acl = `@prefix acl: <http://www.w3.org/ns/auth/acl#>.
+@prefix foaf: <http://xmlns.com/foaf/0.1/>.
+
+<#public>
+    a acl:Authorization;
+    acl:agentClass foaf:Agent;
+    acl:accessTo <./>;
+    acl:default <./>;
+    acl:mode acl:Read.
+
+<#owner>
+    a acl:Authorization;
+    acl:agent <${webId}>;
+    acl:accessTo <./>;
+    acl:default <./>;
+    acl:mode acl:Read, acl:Write, acl:Control.
+`
+  await putResource(page, new URL('.acl', slideshowContainer).toString(), acl, 'text/turtle')
+
+  return { containerUrl: slideshowContainer, imageUrls }
 }
 
 async function createContainer (page: Page, parentUrl: string, slug: string): Promise<string> {

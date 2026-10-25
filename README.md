@@ -412,8 +412,17 @@ in `../../mydocs/SolidosNavigationAndView.md`, including:
 - the file-explorer header being visible for the logged-in user's Storage view;
 - the file-explorer header being absent from another user's Storage tab;
 - other-user Profile/Friends/Storage tab switching;
-- logged-in and logged-out friend actions; and
-- the Add as friend to Already a friend state transition.
+- logged-in and logged-out friend actions;
+- the Add as friend to Already a friend state transition;
+- private content opened by its URL while logged out, which shows exactly one
+  access-denied error state, and the same container after logging in;
+- logging in from the server root and from a private container, which returns to
+  that page logged in; and
+- the server root: the full folder view when it is public (3100), one access error
+  when it is private (3200).
+
+In subdomain mode a login belongs to one origin, so tests that open the server root
+or another user's pod log the owner in again on that page, as a real user must.
 
 Unlike the older profile-navigation command, this workflow does not require
 manual account creation, target URL configuration, profile seeding, or cleanup.
@@ -568,6 +577,25 @@ test can run with only `E2E_RUN_DATABROWSER=true`; authenticated navigation,
 expanded-object, preview, and MIME cases are skipped unless the disposable
 runtime flags and runtime from `npm run setup:local` are available.
 
+The standalone `browse.html` suite is in `tests/databrowser/browse.spec.ts`.
+It covers the shell, URI-entry behavior, and container normalization without
+losing query strings or fragments. Supporting HTTP POST alone must not make a
+resource a container. Browse loads resources through the shared authenticated
+store before using `solid-logic` container detection; it does not parse HTTP
+headers itself. The suite also checks the profile heading for a queried WebID and
+proves that the disposable owner can log in, open the private pod storage root,
+see a private resource created in that root, and read its content:
+
+```bash
+E2E_RUN_DATABROWSER=true \
+E2E_RUN_LOCAL_PROFILE=true \
+E2E_USE_LOCAL_RUNTIME=true \
+npm run test:e2e -- tests/databrowser/browse.spec.ts
+```
+
+The authenticated browse test uses `runtime.podUrl` rather than a hard-coded
+`/sharon` path, so it works with every disposable local account and pod name.
+
 ## Design decisions
 
 ### Attach to the existing application
@@ -614,6 +642,36 @@ selectors. RDF assertions use stable predicates and values rather than
 presentation-specific markup.
 
 ## Tests Covered
+
+The current Playwright inventory is listed below. Unless a wrapper is shown,
+run the file with `npm run test:e2e -- <file>`. Running `npm run test:e2e` with
+no gates is safe discovery mode: gated tests are reported as skipped.
+
+| Spec | Coverage | Gate or wrapper |
+| --- | --- | --- |
+| `tests/smoke/home.spec.ts` | Application reachability and title | `E2E_RUN_SMOKE`; `npm run test:local` |
+| `tests/auth/auth-placeholder.spec.ts` | Local identity-provider login and OIDC consent | `E2E_RUN_AUTH` and `E2E_USE_LOCAL_RUNTIME`; `npm run test:local` |
+| `tests/profile/profile-read.spec.ts` | Public profile heading, bio, skills, projects, social and contact data | `E2E_RUN_PROFILE_READS`; `npm run test:local` |
+| `tests/profile/authenticated-profile.spec.ts` | Authenticated profile mutations, RDF persistence, list reordering and restoration | `E2E_RUN_LOCAL_PROFILE` and `E2E_USE_LOCAL_RUNTIME`; `npm run test:local` |
+| `tests/profile/profile-navigation.spec.ts` | Account menu, profile routes, browser back, friendship and logged-out controls | `E2E_RUN_PROFILE_NAVIGATION`; `npm run test:local` |
+| `tests/navigation/navigation-and-view.spec.ts` | Suffix/subdomain navigation and explorer/header view matrix | `npm run test:navigation` |
+| `tests/databrowser/databrowser.spec.ts` | Authenticated mashlib Databrowser navigation, RDF subjects, previews and MIME isolation | `E2E_RUN_DATABROWSER`; `npm run test:local` |
+| `tests/databrowser/browse.spec.ts` | Standalone `browse.html` shell, URI navigation, authenticated private storage-root access | `E2E_RUN_DATABROWSER`; authenticated case also needs local-profile runtime |
+| `tests/folder-pane/folder-pane-container.spec.ts` | Grid/list presentation, selection, Home navigation, access indicators, menus and pane routing | `npm run test:folder-pane` |
+| `tests/folder-pane/folder-pane-resources.spec.ts` | Representative resource panes, image/HTML previews and content scrolling | `npm run test:folder-pane` |
+| `tests/folder-pane/folder-pane-created-resources.spec.ts` | Creation and rendering for every registered creatable pane | `npm run test:folder-pane` |
+| `tests/folder-pane/folder-pane-search.spec.ts` | Case-insensitive storage search, empty/no-results states and selection | `npm run test:folder-pane`; suite currently gated in the spec |
+| `tests/folder-pane/folder-pane-add-menu-panes.spec.ts` | Storage Add menu and pane-specific resource creation | `npm run test:folder-pane` |
+| `tests/access-control/access-control-focus.spec.ts` | Sharing-dialog keyboard accessibility, reflow, synthetic ACL edits and error handling | `npm run test:access-control` |
+| `tests/access-control/access-control-server.spec.ts` | Live Manage Access UI and server-enforced owner/viewer authorization | `npm run test:access-control:server` |
+| `tests/zz-probe.spec.ts` | Temporary local Friends-menu diagnostic probe | Not part of a supported workflow; remove or gate before relying on it |
+
+The two access-control specs intentionally have different scopes:
+`access-control-focus.spec.ts` uses synthetic ACL data and does not contact a
+pod, while `access-control-server.spec.ts` verifies authorization against a
+real disposable pod. The navigation workflow is separate from
+`profile-navigation.spec.ts` because it runs independently for both localhost
+topologies and owns its own setup and cleanup.
 
 ### Profile Pane
 
@@ -716,6 +774,8 @@ groups, origins, conditions, or other principals are enforced by a server.
 - `scripts/check-config.mjs` — configuration validation;
 - `tests/smoke/` — reachability coverage;
 - `tests/profile/` — public reads and authenticated mutations;
+- `tests/databrowser/` — mashlib Databrowser and standalone `browse.html` coverage;
+- `tests/navigation/` — suffix/subdomain navigation and view-mode coverage;
 - `tests/access-control/` — dialog accessibility, ACL UI changes, and
   server-side authorization enforcement;
 - `tests/folder-pane/` — file-explorer, folder-pane, Source creation, and pane

@@ -55,6 +55,31 @@ test.describe('profile navigation and friendship flows', () => {
     await expectNavigationState(page, { paneName: 'basicPreferences' })
   })
 
+  test('opens Dashboard when the current page is inaccessible', async ({ page }) => {
+    const runtime = getLocalRuntime()
+    const inaccessibleUrl = new URL(`e2e-inaccessible-${Date.now()}/`, runtime.podUrl).toString()
+
+    await page.route(`${inaccessibleUrl}**`, async route => {
+      if (route.request().resourceType() === 'document') {
+        await route.continue()
+        return
+      }
+      await route.fulfill({
+        status: 401,
+        contentType: 'text/plain',
+        body: 'Unauthorized'
+      })
+    })
+    await page.goto(inaccessibleUrl, { waitUntil: 'domcontentloaded' })
+
+    await expect(page.locator('#OutlineView solid-ui-error-state')).toContainText('Access denied')
+    await selectAccountItem(page, 'Dashboard')
+
+    await expectNavigationState(page, { paneName: 'home' })
+    await expect(page.getByRole('heading', { name: 'Create new thing somewhere' })).toBeVisible()
+    await expect(page.locator('#OutlineView solid-ui-error-state')).toHaveCount(0)
+  })
+
   test('goes back from Friends to the profile route and resource', async ({ page }) => {
     const runtime = getLocalRuntime()
 
@@ -140,7 +165,9 @@ async function accountMenuItems (page: Page): Promise<string[]> {
 
 async function selectAccountItem (page: Page, label: string): Promise<void> {
   await openAccountMenu(page)
-  await page.locator('solid-ui-account solid-ui-menu-item').filter({ hasText: label }).first().click()
+  const item = page.locator('solid-ui-account solid-ui-menu-item').filter({ hasText: label }).first()
+  await expect(item).toBeVisible()
+  await item.click()
 }
 
 async function openAccountMenu (page: Page): Promise<void> {

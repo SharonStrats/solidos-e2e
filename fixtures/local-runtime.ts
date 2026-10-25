@@ -3,11 +3,14 @@ import { resolve } from 'node:path'
 
 export type LocalRuntime = {
   authenticated: boolean
+  /** The server the accounts were created on; it is also their identity provider. */
+  baseURL?: string
   email: string
   password: string
   viewerEmail?: string
   viewerPassword?: string
   viewerWebId?: string
+  viewerProfileUrl?: string
   viewerPodUrl?: string
   profileFile: string | null
   profileUrl: string

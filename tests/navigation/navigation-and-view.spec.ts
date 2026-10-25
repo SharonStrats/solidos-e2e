@@ -1,6 +1,6 @@
 import { expect as baseExpect, test } from '../../fixtures/test.js'
 import type { Page } from '@playwright/test'
-import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
+import { authenticateProfileOwner, loginOwnerFromPage } from '../../fixtures/authenticate-owner.js'
 import { getLocalRuntime } from '../../fixtures/local-runtime.js'
 import { resetLocalProfile } from '../../fixtures/reset-local-profile.js'
 
@@ -46,12 +46,22 @@ test.describe('logged in, viewing my own content', () => {
     await authenticateProfileOwner(page)
   })
 
-  test('the server root shows the full folder view', async ({ page }) => {
+  // The 3100 root is public and lists the pods; a private root (3200, or a hosted server
+  // such as solidcommunity.net) shows one error pointing the user to the account menu.
+  test('the server root shows the full folder view, or an access error when it is private', async ({ page }) => {
     const targets = navigationTargets()
+    const rootStatus = (await page.request.get(targets.serverRoot, { headers: { Accept: 'text/turtle' } })).status()
 
-    await page.goto(targets.serverRoot, { waitUntil: 'domcontentloaded' })
+    await openLoggedIn(page, targets.serverRoot)
 
-    await expectExplorerView(page)
+    if (rootStatus === 200) {
+      await expectExplorerView(page)
+      return
+    }
+    const error = page.locator('#OutlineView solid-ui-error-state')
+    await expect(error).toHaveCount(1)
+    await expect(error).toContainText('You are logged in, but this root resource is not publicly readable. Select a storage location from the account menu to continue.')
+    await expectNoFolderView(page)
   })
 
   test('my pod root shows the full folder view without the file explorer header', async ({ page }) => {
@@ -69,6 +79,7 @@ test.describe('logged in, viewing my own content', () => {
     await page.goto(targets.ownerProfile, { waitUntil: 'domcontentloaded' })
 
     await expectProfileView(page)
+    await expect(page.getByRole('button', { name: 'Edit', exact: true }).first()).toBeVisible()
     await expectNoFolderView(page)
   })
 
@@ -96,13 +107,23 @@ test.describe('logged in, viewing my own content', () => {
 
     await page.goto(targets.ownerIndexedContainer, { waitUntil: 'domcontentloaded' })
 
-    await expect(page.locator('contacts-pane-address-book')).toBeVisible()
+    await expect(page.getByRole('main', { name: 'Address Book', exact: true })).toBeVisible()
     await expectNoFolderView(page)
+  })
+
+  test('a container with an index opened without its trailing slash shows its application pane', async ({ page }) => {
+    const targets = navigationTargets()
+
+    await page.goto(targets.ownerIndexedContainer.replace(/\/$/, ''), { waitUntil: 'domcontentloaded' })
+
+    await expect(page.getByRole('main', { name: 'Address Book', exact: true })).toBeVisible()
+    await expectNoFolderView(page)
+    await expect(page.locator('#OutlineView solid-ui-error-state')).toHaveCount(0)
   })
 
   test('the account menu opens my profile, friends and storage whatever the URL', async ({ page }) => {
     const targets = navigationTargets()
-    await page.goto(targets.otherProfile, { waitUntil: 'domcontentloaded' })
+    await openLoggedIn(page, targets.otherProfile)
     await expectProfileView(page)
 
     await selectAccountItem(page, 'Profile')
@@ -146,7 +167,7 @@ test.describe('logged in, viewing someone else', () => {
 
   test('the tabs switch views whatever the URL', async ({ page }) => {
     const targets = navigationTargets()
-    await page.goto(targets.otherStorage, { waitUntil: 'domcontentloaded' })
+    await openLoggedIn(page, targets.otherStorage)
     await expectOtherUserNavigation(page, 'Storage')
 
     await clickNavigationTab(page, 'Profile')
@@ -165,7 +186,7 @@ test.describe('logged in, viewing someone else', () => {
   test('the friends tab offers to add them as a friend', async ({ page }) => {
     const targets = navigationTargets()
 
-    await page.goto(targets.otherProfile, { waitUntil: 'domcontentloaded' })
+    await openLoggedIn(page, targets.otherProfile)
     await clickNavigationTab(page, 'Friends')
 
     await expect(page.getByRole('button', { name: 'Add as friend', exact: true })).toBeVisible()
@@ -178,7 +199,7 @@ test.describe('logged in, viewing someone else', () => {
     )
     const targets = navigationTargets()
 
-    await page.goto(targets.otherProfile, { waitUntil: 'domcontentloaded' })
+    await openLoggedIn(page, targets.otherProfile)
     await clickNavigationTab(page, 'Friends')
 
     await page.getByRole('button', { name: 'Add as friend', exact: true }).click()
@@ -222,6 +243,117 @@ test.describe('logged out, viewing someone else', () => {
       await context.close()
     }
   })
+
+  test('their tabs switch between Profile, Friends and Storage without login', async ({ browser }) => {
+    const targets = navigationTargets()
+    const context = await browser.newContext()
+    const page = await context.newPage()
+
+    try {
+      await page.goto(targets.otherProfile, { waitUntil: 'domcontentloaded' })
+      await expectOtherUserNavigation(page, 'Profile')
+
+      await clickNavigationTab(page, 'Friends')
+      await expectOtherUserNavigation(page, 'Friends')
+      await expect(page.getByRole('tablist', { name: 'Social sections' })
+        .getByRole('tab', { name: 'All Friends' })).toBeVisible()
+      await expect(page.getByRole('button', { name: /Add as friend|Already a friend/ })).toHaveCount(0)
+
+      await clickNavigationTab(page, 'Storage')
+      await expectOtherUserNavigation(page, 'Storage')
+      await expectStorageView(page)
+    } finally {
+      await context.close()
+    }
+  })
+})
+
+test.describe('logged out, opening private content by its URL', () => {
+  test.setTimeout(120_000)
+  test.beforeEach(() => skipUnlessRunner())
+
+  const privateTargets: Array<[string, (targets: NavigationTargets) => string]> = [
+    ['a container with an index', targets => targets.ownerIndexedContainer],
+    ['a container with an index without its trailing slash', targets => targets.ownerIndexedContainer.replace(/\/$/, '')],
+    ['a plain container', targets => targets.ownerContainer],
+    ['a resource', targets => targets.ownerResource]
+  ]
+
+  for (const [name, target] of privateTargets) {
+    test(`${name} shows only an access denied error`, async ({ browser }) => {
+      const context = await browser.newContext()
+      const page = await context.newPage()
+
+      try {
+        await page.goto(target(navigationTargets()), { waitUntil: 'domcontentloaded' })
+
+        await expectSoloAccessDenied(page)
+      } finally {
+        await context.close()
+      }
+    })
+  }
+
+  test('after logging in, a container with an index shows its application pane', async ({ browser }) => {
+    const targets = navigationTargets()
+    const context = await browser.newContext()
+    const page = await context.newPage()
+
+    try {
+      await page.goto(targets.ownerIndexedContainer, { waitUntil: 'domcontentloaded' })
+      await expectSoloAccessDenied(page)
+
+      await resetLocalProfile()
+      await authenticateProfileOwner(page)
+      await page.goto(targets.ownerIndexedContainer, { waitUntil: 'domcontentloaded' })
+
+      await expect(page.getByRole('main', { name: 'Address Book', exact: true })).toBeVisible()
+      await expectNoFolderView(page)
+      await expect(page.locator('#OutlineView solid-ui-error-state')).toHaveCount(0)
+    } finally {
+      await context.close()
+    }
+  })
+})
+
+test.describe('logging in from the page being viewed', () => {
+  test.setTimeout(120_000)
+  test.beforeEach(() => skipUnlessRunner())
+
+  // The identity provider returns to the page itself. For a container or the server root the
+  // callback must not be turned into a `//` URL that loses the login (see mydocs/pivotchange.md).
+  test('from the server root returns to the root, logged in', async ({ browser }) => {
+    const targets = navigationTargets()
+    const context = await browser.newContext()
+    const page = await context.newPage()
+
+    try {
+      await resetLocalProfile()
+      await loginOwnerFromPage(page, targets.serverRoot)
+
+      expect(page.url()).toBe(targets.serverRoot)
+    } finally {
+      await context.close()
+    }
+  })
+
+  test('from a private container returns to it and shows its application pane', async ({ browser }) => {
+    const targets = navigationTargets()
+    const context = await browser.newContext()
+    const page = await context.newPage()
+
+    try {
+      await resetLocalProfile()
+      await loginOwnerFromPage(page, targets.ownerIndexedContainer)
+
+      expect(page.url()).toBe(targets.ownerIndexedContainer)
+      await expect(page.getByRole('main', { name: 'Address Book', exact: true })).toBeVisible()
+      await expectNoFolderView(page)
+      await expect(page.locator('#OutlineView solid-ui-error-state')).toHaveCount(0)
+    } finally {
+      await context.close()
+    }
+  })
 })
 
 test.describe('browse.html', () => {
@@ -260,6 +392,19 @@ function navigationTargets (): NavigationTargets {
   }
 }
 
+/**
+ * Opens `url` as the logged-in owner. A login belongs to one origin: in subdomain mode the
+ * server root and other pods are different origins from the owner's pod, so, like a real
+ * user there, the owner logs in again from that page. In suffix mode this is a plain goto.
+ */
+async function openLoggedIn (page: Page, url: string): Promise<void> {
+  if (new URL(url).origin === new URL(getLocalRuntime().profileUrl).origin) {
+    await page.goto(url, { waitUntil: 'domcontentloaded' })
+    return
+  }
+  await loginOwnerFromPage(page, url)
+}
+
 function folderContainer (page: Page) {
   return page.locator('folder-pane-container').getByRole('listbox', { name: 'Container resources' })
 }
@@ -293,6 +438,18 @@ async function expectContainerView (page: Page): Promise<void> {
 
 async function expectNoFolderView (page: Page): Promise<void> {
   await expect(page.locator('folder-pane-view')).toHaveCount(0)
+}
+
+/** A single access error in place of the solo view, without any folder view or explorer chrome. */
+async function expectSoloAccessDenied (page: Page): Promise<void> {
+  const errorState = page.locator('#OutlineView solid-ui-error-state')
+  await expect(errorState).toHaveCount(1)
+  await expect(errorState).toHaveAttribute('message', /not publicly readable\. Log in to view it\./)
+  await expect(page.locator('#OutlineView [data-outline-error-for]:not(solid-ui-error-state)')).toHaveCount(0)
+  await expect(page.locator('folder-pane-view')).toHaveCount(0)
+  await expect(page.locator('folder-pane-sidebar')).toHaveCount(0)
+  await expectNoFileExplorerHeader(page)
+  await expect(page.locator('contacts-pane-address-book')).toHaveCount(0)
 }
 
 async function expectProfileView (page: Page): Promise<void> {

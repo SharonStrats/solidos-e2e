@@ -325,7 +325,7 @@ async function main() {
 
 async function selectFolderPaneAudiences (page, preferencesUrl) {
   log('Opening Preferences from the authenticated account menu')
-  await page.locator('solid-ui-account > solid-ui-menu > button[type="button"]').click()
+  await page.locator('solid-ui-account solid-ui-menu button[slot="trigger"]').click()
   await page.getByText('Preferences', { exact: true }).click()
   await page.getByRole('heading', { name: 'User types', exact: true }).waitFor()
 

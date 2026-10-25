@@ -132,6 +132,15 @@ test.describe('folder-pane resource selection', () => {
 
     const content = editor.locator('.cm-content')
     await content.click()
+    await page.keyboard.press('End')
+    await page.keyboard.press('Tab')
+    await expect.poll(() => content.textContent()).toMatch(/\t| {2}/)
+    await expect.poll(() => page.evaluate(() => {
+      const active = document.activeElement
+      return active instanceof HTMLElement &&
+        (active.matches('.cm-content') || Boolean(active.closest('.cm-editor')))
+    })).toBe(true)
+
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
     await page.keyboard.type('export const seeded = false\n')
     await editor.locator('.sourcePaneSaveButton').click()

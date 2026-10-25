@@ -379,7 +379,7 @@ test.describe('access-control dialog keyboard focus and reflow', () => {
     await expect(page.getByRole('button', { name: 'Advanced', exact: true })).toHaveCount(0)
     const mixedScopeAlert = page.getByRole('alert').filter({ hasText: 'different access settings for the folder and its contents' })
     await expect(mixedScopeAlert).toContainText('different access settings for the folder and its contents')
-    await expect(mixedScopeAlert).toContainText('You can still change access for the folder or its contents separately below.')
+    await expect(mixedScopeAlert).toContainText('Currently you can only add and/or update access on the folder and contents combined.')
     await expect(comboboxes(page).first()).toBeDisabled()
     await expect(page.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
     await page.getByRole('button', { name: 'Cancel', exact: true }).click()
