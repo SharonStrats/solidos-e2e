@@ -3,6 +3,15 @@ import { existsSync, rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
+const suiteStartedAt = Date.now()
+
+function formatElapsedTime () {
+  const elapsedSeconds = Math.round((Date.now() - suiteStartedAt) / 1000)
+  const minutes = Math.floor(elapsedSeconds / 60)
+  const seconds = elapsedSeconds % 60
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`
+}
+
 if (!/^https?:\/\/localhost:(3100|3200)\/?$/.test(baseURL)) {
   throw new Error('test:navigation requires E2E_BASE_URL to be localhost:3100 or localhost:3200')
 }
@@ -43,7 +52,7 @@ const environment = {
   E2E_RUN_NAVIGATION_VIEW: 'true',
   E2E_RUN_LOCAL_PROFILE: 'true',
   E2E_USE_LOCAL_RUNTIME: 'true',
-  E2E_CLEANUP_ALL_DISPOSABLE_PODS: process.env.E2E_CLEANUP_ALL_DISPOSABLE_PODS || 'true'
+  E2E_CLEANUP_ALL_DISPOSABLE_PODS: process.env.E2E_CLEANUP_ALL_DISPOSABLE_PODS || 'false'
 }
 
 let status = 1
@@ -62,4 +71,5 @@ try {
     if (status === 0 && cleanupStatus !== 0) process.exitCode = cleanupStatus
   }
   rmSync(runtimeFile, { force: true })
+  console.log(`[e2e-navigation] Total elapsed time: ${formatElapsedTime()}`)
 }

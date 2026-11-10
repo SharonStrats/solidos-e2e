@@ -302,6 +302,28 @@ Access-control is deliberately outside this non-access-control coverage:
   server-enforced command and the folder-pane command. Run
   `npm run test:folder-pane` separately for folder-pane coverage.
 
+The folder-pane command includes the Step 8 browser validation suite. In
+addition to keyboard, collapse, and resize coverage, it checks tab entry and
+exit, nested pointer selection, high-zoom narrow layouts, cancelled pointer
+drags, and reduced-motion behavior:
+
+```bash
+E2E_RUN_FOLDER_PANE=true \
+E2E_BASE_URL=http://localhost:3100 \
+npm run test:folder-pane -- \
+  tests/folder-pane/folder-pane-sidebar-validation.spec.ts
+```
+
+The suite uses the same disposable authenticated runtime as the other
+folder-pane tests and is skipped unless `E2E_RUN_FOLDER_PANE=true` and
+`E2E_FOLDER_PANE_CONTAINER_URL` (or a runtime pod URL) are available.
+
+The deletion regression uses a Turtle resource with real RDF statements,
+opens Under The Hood, confirms deletion, checks the success dialog and HTTP
+404, and verifies removal from the folder view. This covers RDF cleanup as
+well as server deletion; a plain-text fixture alone does not exercise the
+live subject index used by Under The Hood.
+
 The commands below use inline environment variables, so they work in a fresh
 terminal without a `.env.local` file. If you keep values in `.env.local`, load
 them into the current shell before running a command:
@@ -820,14 +842,25 @@ Extra Playwright arguments can be passed after `--`, for example
 
 Cleanup removes disposable E2E pods, their local Pivot fixture directories,
 matching local account/OIDC metadata, and saved authentication-state files.
-It never removes non-E2E records.
+By default metadata cleanup is restricted to the current runtime's disposable
+pod names, including when account API deletion returns an error. It never
+removes non-E2E records.
 
 The command runs these five suites serially:
 
 - `folder-pane-container.spec.ts` verifies grid/list presentation and stable
   resource identities, resource selection and Home navigation, pane switching,
-  access indicators, the resource action menu's Manage Access event, and
+  access indicators, Manage Access opening the Sharing pane for the exact
+  file or container, inherited sharing grants and owner retention, and
   storage Add-menu basics including Upload, Source, and Folder creation.
+  The MP4 upload check uses a small in-memory fixture to test filename handling
+  and video-preview routing; it is not a large-file upload or playback test.
+  File-resource menu tests wait for pane discovery and target the labelled action
+  inside the selected resource's menu, rather than a dropdown wrapper whose
+  assigned slot can change while entries load. Sharing's **Add Person** form
+  takes a full HTTP(S) identity URI in a textbox; it has no suggestion picker.
+  ACL persistence checks parse Turtle with the ACL document as the base URI,
+  since relative and prefixed identity references are valid serialization.
 - `folder-pane-resources.spec.ts` seeds representative resources for each
   viewable non-global pane with a registered `mintClass` (except questionnaire)
   in the disposable pod, then selects each by RDF `about` URI and checks the

@@ -6,6 +6,8 @@ const startApp = process.env.E2E_START_APP === 'true'
 const singleWorker = Boolean(process.env.CI) ||
   process.env.E2E_RUN_LOCAL_PROFILE === 'true' ||
   process.env.E2E_RUN_FOLDER_PANE === 'true' ||
+  process.env.E2E_RUN_AUTH_OPTIONS === 'true' ||
+  process.env.E2E_RUN_REQUEST_DEDUP === 'true' ||
   process.env.E2E_RUN_ACCESS_CONTROL === 'true' ||
   process.env.E2E_RUN_ACCESS_CONTROL_SERVER === 'true'
 const runtimeFile = process.env.E2E_RUNTIME_FILE || '.e2e-runtime.json'

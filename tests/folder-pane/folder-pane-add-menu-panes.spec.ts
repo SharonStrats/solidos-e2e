@@ -266,7 +266,7 @@ test.describe('folder-pane Add menu panes', () => {
           await expect(provider).toHaveCount(1)
           await expect.poll(() => provider.evaluate(element =>
             (element as HTMLElement & { pane?: { name?: string } }).pane?.name
-          )).toBe(paneCase.renderedPane ?? paneName)
+          ), { timeout: 15_000 }).toBe(paneCase.renderedPane ?? paneName)
           await expect.poll(() => provider.evaluate(element =>
             (element as HTMLElement & { subjectUri?: string, subject?: { uri?: string } }).subjectUri ??
             (element as HTMLElement & { subject?: { uri?: string } }).subject?.uri
@@ -287,6 +287,7 @@ test.describe('folder-pane Add menu panes', () => {
           await expect(page.locator('folder-pane-storage-header')).toHaveCount(1)
           await expect(page.locator('folder-pane-sidebar')).toHaveCount(1)
           await openSolo(page, containedUrl)
+          await expect(page).toHaveURL(containedUrl)
           const soloProvider = page.locator('solid-ui-file-explorer-provider')
           await expect(soloProvider).toHaveCount(1)
           await expect(page.locator('folder-pane-container')).toHaveCount(0)

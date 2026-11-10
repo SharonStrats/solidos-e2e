@@ -1,10 +1,53 @@
 import { test, expect } from '../../fixtures/test.js'
 import type { Locator, Page } from '@playwright/test'
-import { seedRepresentativeFolderPaneCases } from '../../fixtures/folder-pane.js'
+import { seedNestedFolderPaneCase, seedRepresentativeFolderPaneCases } from '../../fixtures/folder-pane.js'
 import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
 import { openFolderPane } from '../../fixtures/open-folder-pane.js'
 
 test.describe('folder-pane resource selection', () => {
+  test('keeps breadcrumb labels and parent navigation correct through nested folders', async ({ page }) => {
+    test.skip(
+      process.env.E2E_RUN_FOLDER_PANE !== 'true',
+      'Set E2E_RUN_FOLDER_PANE=true to run folder-pane coverage.'
+    )
+
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL
+    test.skip(!containerUrl, 'Set E2E_FOLDER_PANE_CONTAINER_URL to run folder-pane coverage.')
+    if (!containerUrl) return
+
+    await authenticateProfileOwner(page)
+    const nested = await seedNestedFolderPaneCase(page, containerUrl)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await openFolderPane(page, containerUrl)
+
+    const header = page.locator('folder-pane-storage-header')
+    const breadcrumbs = header.locator('nav[aria-label="Storage breadcrumb"]')
+    await expect(breadcrumbs.getByRole('button', { name: 'Home' })).toHaveCount(0)
+    await expect(breadcrumbs.locator('[aria-current="page"]')).toHaveText('Home')
+
+    for (const [index, levelUrl] of nested.levels.entries()) {
+      await page.locator(`folder-pane-container li[role="option"][about="<${levelUrl}>"]`).click()
+
+      const expectedLabels = ['Home', ...nested.levels.slice(0, index + 1).map(url =>
+        new URL(url).pathname.split('/').filter(Boolean).at(-1) || url
+      )]
+      await expect(breadcrumbs.locator('li')).toHaveCount(expectedLabels.length)
+      await expect.poll(() => breadcrumbs.locator('li').evaluateAll(items =>
+        items.map(item => item.textContent?.replace(/\s*\/\s*$/, '').trim())
+      )).toEqual(expectedLabels)
+      await expect(breadcrumbs.locator('[aria-current="page"]')).toHaveText(expectedLabels.at(-1)!)
+    }
+
+    const parentLabel = new URL(nested.levels[1]).pathname.split('/').filter(Boolean).at(-1)!
+    await breadcrumbs.getByRole('button', { name: parentLabel, exact: true }).click()
+    await expect(breadcrumbs.locator('[aria-current="page"]')).toHaveText(parentLabel)
+    await expect(page.locator(`folder-pane-container li[role="option"][about="<${nested.levels[2]}>"]`)).toHaveCount(1)
+
+    await breadcrumbs.getByRole('button', { name: 'Home', exact: true }).click()
+    await expect(breadcrumbs.locator('[aria-current="page"]')).toHaveText('Home')
+    await expect(page.locator(`folder-pane-container li[role="option"][about="<${nested.levels[0]}>"]`)).toHaveCount(1)
+  })
+
   test('opens each configured representative resource through the folder flow', async ({ page }) => {
     test.skip(
       process.env.E2E_RUN_FOLDER_PANE !== 'true',
@@ -95,7 +138,7 @@ test.describe('folder-pane resource selection', () => {
     }
   })
 
-  test('edits, saves, and rejects invalid source-pane content', async ({ page }) => {
+  test('edits and saves source-pane content', async ({ page }) => {
     test.skip(
       process.env.E2E_RUN_FOLDER_PANE !== 'true',
       'Set E2E_RUN_FOLDER_PANE=true to run folder-pane coverage.'
@@ -132,38 +175,154 @@ test.describe('folder-pane resource selection', () => {
 
     const content = editor.locator('.cm-content')
     await content.click()
-    await page.keyboard.press('End')
-    await page.keyboard.press('Tab')
+    await content.press('End')
+    await content.pressSequentially('  ')
     await expect.poll(() => content.textContent()).toMatch(/\t| {2}/)
-    await expect.poll(() => page.evaluate(() => {
-      const active = document.activeElement
-      return active instanceof HTMLElement &&
-        (active.matches('.cm-content') || Boolean(active.closest('.cm-editor')))
-    })).toBe(true)
 
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-    await page.keyboard.type('export const seeded = false\n')
+    await content.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+    await content.pressSequentially('export const seeded = false\n')
     await editor.locator('.sourcePaneSaveButton').click()
 
     await expect.poll(async () => readAuthenticatedResource(page, sourceCase.resourceUrl))
       .toContain('export const seeded = false')
     await expect(editor.locator('.sourcePaneSaveButton')).toHaveCount(0)
+    await expect(provider.locator('.sourcePaneStatusMessage')).toHaveText('Source saved.')
+    await expect(provider.locator('solid-ui-error-state')).toHaveCount(0)
 
-    await provider.evaluate((element) => {
-      const editorProvider = element as HTMLElement & {
-        value?: { beginEditing?: () => void }
-      }
-      editorProvider.value?.beginEditing?.()
-    })
+  })
+
+  test('selects a file, opens Source from its menu, and enters edit mode', async ({ page }) => {
+    test.skip(
+      process.env.E2E_RUN_FOLDER_PANE !== 'true',
+      'Set E2E_RUN_FOLDER_PANE=true to run folder-pane coverage.'
+    )
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL
+    test.skip(!containerUrl, 'Set E2E_FOLDER_PANE_CONTAINER_URL to run source-pane coverage.')
+    if (!containerUrl) return
+
+    await page.setViewportSize({ width: 320, height: 844 })
+    await authenticateProfileOwner(page)
+    await openFolderPane(page, containerUrl)
+    const cases = await seedRepresentativeFolderPaneCases(page, containerUrl)
+    const sourceCase = cases.find(resourceCase => resourceCase.paneName === 'source')
+    expect(sourceCase, 'Expected a seeded Source pane resource').toBeDefined()
+    if (!sourceCase) return
+
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await openFolderPane(page, containerUrl)
+
+    const item = page.locator(`folder-pane-container li[role="option"][about="<${sourceCase.resourceUrl}>"]`)
+    await expect(item).toBeVisible()
+    await item.getByTitle('More options').click()
+    const resourceMenu = item.locator('solid-ui-resource-actions-menu')
+    await expect(resourceMenu.getByRole('menuitem', { name: /source/i })).toBeVisible()
+    await resourceMenu.getByRole('menuitem', { name: /source/i }).click()
+
+    const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+    await expect(provider).toHaveCount(1)
+    await expect(provider.evaluate(element =>
+      (element as HTMLElement & { pane?: { name?: string } }).pane?.name
+    )).resolves.toBe('source')
+
+    const editor = provider.locator('source-pane-source-editor-card')
+    const sourcePane = provider.locator('.sourcePane')
+    await expect(editor.locator('.cm-content')).toContainText('export const seeded = true')
+    await expect(sourcePane).toHaveAttribute('role', 'region')
+    await expect(sourcePane).toHaveAttribute('aria-label', `Source pane for ${sourceCase.resourceUrl}`)
+    await expect(editor.locator('section')).toHaveAttribute('aria-busy', 'false')
+    await expect(editor.locator('.cm-content')).toHaveAttribute(
+      'aria-label',
+      `Source editor for ${sourceCase.resourceUrl}`
+    )
+    await expect(editor.locator('.cm-content')).toHaveAttribute(
+      'aria-description',
+      'Source content. This content is read-only until Edit is selected.'
+    )
+
+    const headerMenu = provider.locator('solid-ui-file-explorer-header solid-ui-resource-actions-menu')
+    await headerMenu.getByTitle('More options').click()
+    await expect(headerMenu.getByRole('menuitem', { name: 'Edit', exact: true })).toBeVisible()
+    await headerMenu.getByRole('menuitem', { name: 'Edit', exact: true }).click()
+
     await expect(editor.locator('.sourcePaneSaveButton')).toBeVisible()
-    await content.click()
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-    await page.keyboard.type('export const = invalid\n')
-    await editor.locator('.sourcePaneSaveButton').click()
+    await expect(editor.locator('.sourcePaneCancelButton')).toBeVisible()
+    const footer = editor.locator('.sourcePaneEditorFooter')
+    const footerBox = await footer.boundingBox()
+    const saveBox = await editor.locator('.sourcePaneSaveButton').boundingBox()
+    const cancelBox = await editor.locator('.sourcePaneCancelButton').boundingBox()
+    const sourcePaneBox = await provider.locator('.sourcePane').boundingBox()
+    expect(footerBox).not.toBeNull()
+    expect(saveBox).not.toBeNull()
+    expect(cancelBox).not.toBeNull()
+    expect(sourcePaneBox).not.toBeNull()
+    expect(footerBox!.width).toBeLessThanOrEqual(sourcePaneBox!.width + 1)
+    expect(saveBox!.x + saveBox!.width).toBeLessThanOrEqual(sourcePaneBox!.x + sourcePaneBox!.width + 1)
+    expect(cancelBox!.x + cancelBox!.width).toBeLessThanOrEqual(sourcePaneBox!.x + sourcePaneBox!.width + 1)
+    await editor.locator('.cm-content').click()
+    await editor.locator('.cm-content').press('End')
+    await editor.locator('.cm-content').pressSequentially('\nexport const edited = true\n')
+    await expect(editor.locator('.cm-content')).toContainText('export const edited = true')
+    await editor.locator('.sourcePaneCancelButton').click()
+    await expect(editor.locator('.sourcePaneCancelButton')).toHaveCount(0)
+    await expect(provider.locator('.sourcePaneStatusMessage')).toHaveText('Source changes canceled.')
+    await expect(provider.locator('solid-ui-error-state')).toHaveCount(0)
+  })
 
-    await expect(page.locator('.sourcePaneStatus')).toContainText('Syntax error: fix the document before saving.')
-    await expect.poll(async () => readAuthenticatedResource(page, sourceCase.resourceUrl))
-      .toContain('export const seeded = false')
+  test('shows saved source content after leaving and reopening the resource', async ({ page }) => {
+    test.skip(
+      process.env.E2E_RUN_FOLDER_PANE !== 'true',
+      'Set E2E_RUN_FOLDER_PANE=true to run folder-pane coverage.'
+    )
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL
+    test.skip(!containerUrl, 'Set E2E_FOLDER_PANE_CONTAINER_URL to run source-pane coverage.')
+    if (!containerUrl) return
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await authenticateProfileOwner(page)
+    await openFolderPane(page, containerUrl)
+    const cases = await seedRepresentativeFolderPaneCases(page, containerUrl)
+    const sourceCase = cases.find(resourceCase => resourceCase.paneName === 'source')
+    expect(sourceCase, 'Expected a seeded Source pane resource').toBeDefined()
+    if (!sourceCase) return
+
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await openFolderPane(page, containerUrl)
+    const item = page.locator(`folder-pane-container li[role="option"][about="<${sourceCase.resourceUrl}>"]`)
+    await expect(item).toBeVisible()
+    await item.getByTitle('More options').click()
+    const resourceMenu = item.locator('solid-ui-resource-actions-menu')
+    await resourceMenu.getByRole('menuitem', { name: /source/i }).click()
+
+    const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+    const editor = provider.locator('source-pane-source-editor-card')
+    await expect(editor.locator('.cm-content')).toContainText('export const seeded = true')
+    const headerMenu = provider.locator('solid-ui-file-explorer-header solid-ui-resource-actions-menu')
+    await headerMenu.getByTitle('More options').click()
+    await headerMenu.getByRole('menuitem', { name: 'Edit', exact: true }).click()
+    await expect(editor.locator('.sourcePaneSaveButton')).toBeVisible()
+
+    const content = editor.locator('.cm-content')
+    await content.click()
+    await content.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+    await content.pressSequentially('export const seeded = afterReopen\n')
+    await editor.locator('.sourcePaneSaveButton').click()
+    await expect(editor.locator('.sourcePaneSaveButton')).toHaveCount(0)
+    await expect.poll(() => editor.evaluate(element =>
+      (element.shadowRoot?.activeElement as HTMLElement | null)?.classList.contains('cm-content') ?? false
+    )).toBe(true)
+
+    await provider.getByTitle('Back').click()
+    await expect(page.locator('folder-pane-content > folder-pane-container')).toHaveCount(1)
+    const reopenedItem = page.locator(`folder-pane-container li[role="option"][about="<${sourceCase.resourceUrl}>"]`)
+    await reopenedItem.getByTitle('More options').click()
+    await reopenedItem.locator('solid-ui-resource-actions-menu')
+      .getByRole('menuitem', { name: /source/i }).click()
+
+    const reopenedEditor = page.locator(
+      'folder-pane-content > solid-ui-file-explorer-provider source-pane-source-editor-card'
+    )
+    await expect(reopenedEditor.locator('.cm-content')).toContainText('export const seeded = afterReopen')
+    await expect(reopenedEditor.locator('.cm-content')).not.toContainText('export const seeded = true')
   })
 })
 

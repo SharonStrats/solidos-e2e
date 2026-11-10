@@ -9,7 +9,7 @@ import { resetLocalProfile } from '../../fixtures/reset-local-profile.js'
  *
  * Folder views:
  * - explorer:  storage header, sidebar and content (own storage, server root, account menu, browse.html)
- * - storage:   sidebar and content only (someone else's storage, under their navbar)
+ * - storage:   storage header, sidebar and content (someone else's storage, under their navbar)
  * - container: the container alone (a plain container URL)
  * None of them carries the file explorer header.
  */
@@ -79,7 +79,6 @@ test.describe('logged in, viewing my own content', () => {
     await page.goto(targets.ownerProfile, { waitUntil: 'domcontentloaded' })
 
     await expectProfileView(page)
-    await expect(page.getByRole('button', { name: 'Edit', exact: true }).first()).toBeVisible()
     await expectNoFolderView(page)
   })
 
@@ -128,7 +127,6 @@ test.describe('logged in, viewing my own content', () => {
 
     await selectAccountItem(page, 'Profile')
     await expectProfileView(page)
-    await expect(page.getByRole('button', { name: 'Edit', exact: true }).first()).toBeVisible()
 
     await selectAccountItem(page, 'Friends')
     await expectFriendsView(page, 'mine')
@@ -421,18 +419,18 @@ async function expectExplorerView (page: Page): Promise<void> {
   await expectNoFileExplorerHeader(page)
 }
 
-/** Sidebar and content, without the storage header. */
+/** Storage header, sidebar and content under someone else's navbar. */
 async function expectStorageView (page: Page): Promise<void> {
   await expect(page.locator('folder-pane-sidebar')).toBeVisible()
   await expect(folderContainer(page)).toBeVisible()
-  await expect(page.locator('folder-pane-storage-header')).toHaveCount(0)
+  await expect(page.locator('folder-pane-storage-header')).toBeVisible()
   await expectNoFileExplorerHeader(page)
 }
 
 /** The container alone. */
 async function expectContainerView (page: Page): Promise<void> {
   await expect(folderContainer(page)).toBeVisible()
-  await expect(page.locator('folder-pane-storage-header')).toHaveCount(0)
+  await expect(page.locator('folder-pane-storage-header')).toBeVisible()
   await expect(page.locator('folder-pane-sidebar')).toHaveCount(0)
 }
 

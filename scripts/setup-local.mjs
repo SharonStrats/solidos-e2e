@@ -26,6 +26,14 @@ function isApplicationOrigin (url) {
       (expected.hostname === 'localhost' && url.hostname.endsWith('.localhost')))
 }
 
+function podUrlFor (podName) {
+  const applicationUrl = new URL(baseURL)
+  if (applicationUrl.port === '3200') {
+    return new URL(`${applicationUrl.protocol}//${podName}.${applicationUrl.hostname}:${applicationUrl.port}/`).toString()
+  }
+  return new URL(`${podName}/`, applicationUrl).toString()
+}
+
 function profileFixture(webId, issuer, podUrl) {
   const profileDocument = webId.replace(/#me$/, '')
   const preferencesUrl = new URL('settings/prefs.ttl', podUrl).toString()
@@ -70,6 +78,48 @@ function log(message) {
   console.log(`[e2e-setup ${new Date().toISOString()}] ${message}`)
 }
 
+async function createPod (page, podName, accountLabel) {
+  const podNameInput = page.getByLabel('Name', { exact: true })
+  await podNameInput.waitFor({ state: 'visible' })
+
+  const podProfileExists = async () => {
+    const profileUrl = new URL('profile/card', podUrlFor(podName)).toString()
+    const response = await page.request.get(profileUrl)
+    return response.ok()
+  }
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await podNameInput.fill(podName)
+    const podResponsePromise = page.waitForResponse(response =>
+      response.request().method() === 'POST' && response.url().endsWith('/pod/'))
+    await page.getByRole('button', { name: 'Create pod' }).click()
+    const podResponse = await podResponsePromise
+    const details = podResponse.ok()
+      ? ''
+      : await podResponse.text().catch(() => '')
+
+    if (podResponse.ok()) {
+      return
+    }
+
+    const lockExpired = details.includes('Lock expired after')
+    const alreadyRegistered = details.includes('is already registered to this account')
+    if (lockExpired || alreadyRegistered) {
+      await page.waitForTimeout(2_000)
+      if (await podProfileExists()) {
+        log(`${accountLabel} pod was created despite the account response; continuing with ${podName}`)
+        return
+      }
+    }
+
+    if (!lockExpired || attempt === 3) {
+      throw new Error(`${accountLabel} pod creation failed (HTTP ${podResponse.status()}): ${details || 'no response body'}`)
+    }
+
+    log(`${accountLabel} pod creation encountered a transient account lock; retrying (${attempt}/3)`)
+  }
+}
+
 async function main() {
   log(`Starting disposable local setup against ${baseURL}`)
   log(`Using email ${email} and pod ${podName}`)
@@ -86,7 +136,13 @@ async function main() {
     })
 
     log('Opening local account registration')
-    await page.goto(`${baseURL}/.account/login/password/register/`, { waitUntil: 'domcontentloaded' })
+    const registrationResponse = await page.goto(`${baseURL}/.account/login/password/register/`, { waitUntil: 'domcontentloaded' })
+    if (!registrationResponse?.ok()) {
+      throw new Error(
+        `Local account registration is unavailable at ${baseURL}/.account/login/password/register/ ` +
+        `(HTTP ${registrationResponse?.status() ?? 'no response'}).`
+      )
+    }
     log(`Registration page loaded: ${page.url()}`)
     await page.getByLabel('Email:', { exact: true }).fill(email)
     await page.getByLabel('Password:', { exact: true }).fill(password)
@@ -111,21 +167,11 @@ async function main() {
     await page.waitForFunction(() => Boolean(document.querySelector('#createPod')?.getAttribute('href')))
     log('Opening create-pod flow')
     await page.locator('#createPod[href]').click()
-    const podNameInput = page.getByLabel('Name', { exact: true })
-    await podNameInput.waitFor({ state: 'visible' })
-    await podNameInput.fill(podName)
     log('Submitting create-pod form')
-    await page.getByRole('button', { name: 'Create pod' }).click()
+    await createPod(page, podName, 'Local')
 
-    const podLink = page.locator('#response-podBaseUrl')
-    const webIdLink = page.locator('#response-webId')
-    await podLink.waitFor({ state: 'visible' })
-    await webIdLink.waitFor({ state: 'visible' })
-    const podUrl = await podLink.getAttribute('href')
-    const webId = await webIdLink.getAttribute('href')
-    if (!podUrl || !webId) {
-      throw new Error('Local identity provider did not return a pod URL and registered WebID')
-    }
+    const podUrl = podUrlFor(podName)
+    const webId = new URL('profile/card#me', podUrl).toString()
     log(`Pod created: ${podUrl}`)
     log(`WebID created: ${webId}`)
     const profileUrl = new URL('profile/card', podUrl.endsWith('/') ? podUrl : `${podUrl}/`).toString()
@@ -157,17 +203,9 @@ async function main() {
     await viewerPage.waitForURL('**/.account/account/**')
     await viewerPage.waitForFunction(() => Boolean(document.querySelector('#createPod')?.getAttribute('href')))
     await viewerPage.locator('#createPod[href]').click()
-    await viewerPage.getByLabel('Name', { exact: true }).fill(viewerPodName)
-    await viewerPage.getByRole('button', { name: 'Create pod' }).click()
-    const viewerPodLink = viewerPage.locator('#response-podBaseUrl')
-    const viewerWebIdLink = viewerPage.locator('#response-webId')
-    await viewerPodLink.waitFor({ state: 'visible' })
-    await viewerWebIdLink.waitFor({ state: 'visible' })
-    const viewerPodUrl = await viewerPodLink.getAttribute('href')
-    const viewerWebId = await viewerWebIdLink.getAttribute('href')
-    if (!viewerPodUrl || !viewerWebId) {
-      throw new Error('Local identity provider did not return the disposable viewer pod and WebID')
-    }
+    await createPod(viewerPage, viewerPodName, 'Local viewer')
+    const viewerPodUrl = podUrlFor(viewerPodName)
+    const viewerWebId = new URL('profile/card#me', viewerPodUrl).toString()
     await viewerPage.context().close()
     const profileFile = pivotDataRoot
       ? resolve(pivotDataRoot, podName, 'profile', 'card$.ttl')
@@ -325,12 +363,14 @@ async function main() {
 
 async function selectFolderPaneAudiences (page, preferencesUrl) {
   log('Opening Preferences from the authenticated account menu')
-  await page.locator('solid-ui-account solid-ui-menu button[slot="trigger"]').click()
-  await page.getByText('Preferences', { exact: true }).click()
+  const accountMenu = page.locator('solid-ui-account solid-ui-menu')
+  await accountMenu.locator('button[slot="trigger"]').waitFor({ state: 'visible' })
+  await accountMenu.locator('button[slot="trigger"]').click()
+  await accountMenu.getByRole('menuitem', { name: 'Preferences', exact: true }).click()
   await page.getByRole('heading', { name: 'User types', exact: true }).waitFor()
 
   const userTypes = page.locator('.classifierBox select[multiple]')
-  await userTypes.waitFor({ state: 'visible' })
+  await userTypes.waitFor({ state: 'visible', timeout: 60_000 })
   const audienceValues = await userTypes.locator('option').evaluateAll(options =>
     options
       .filter(option => /^(power user|developer)$/i.test(option.textContent?.trim() || ''))

@@ -6,16 +6,16 @@ const baseURL = process.env.E2E_BASE_URL || 'http://localhost:3100'
 const runtimeFile = resolve(process.env.E2E_RUNTIME_FILE || '.e2e-runtime.json')
 const pivotDataRoot = process.env.E2E_PIVOT_DATA_ROOT
 
-async function removeDisposableMetadata (directory) {
+async function removeDisposableMetadata (directory, markers = ['e2e-']) {
   for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
     const path = resolve(directory, entry.name)
     if (entry.isDirectory()) {
-      await removeDisposableMetadata(path)
+      await removeDisposableMetadata(path, markers)
       continue
     }
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue
     const content = await readFile(path, 'utf8').catch(() => '')
-    if (content.includes('e2e-')) {
+    if (markers.some(marker => entry.name.includes(marker) || content.includes(marker))) {
       await rm(path, { force: true })
     }
   }
@@ -125,6 +125,12 @@ async function main() {
         if (entry.isFile() && entry.name.startsWith('local-') && entry.name.endsWith('.json')) {
           await rm(resolve(storageStateDirectory, entry.name), { force: true })
         }
+      }
+    } else if (pivotDataRoot) {
+      const markers = [runtime.podName, runtime.viewerPodName]
+        .filter(name => typeof name === 'string' && name.startsWith('e2e-'))
+      if (markers.length > 0) {
+        await removeDisposableMetadata(resolve(pivotDataRoot, '.internal'), markers)
       }
     }
   }

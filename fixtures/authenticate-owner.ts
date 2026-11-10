@@ -47,7 +47,18 @@ async function completeIdentityProviderLogin (page: Page, user: TestUser, return
 
   await waitForConsentAuthorization(page)
   await page.getByRole('button', { name: 'Authorize', exact: true }).click()
-  await page.waitForURL((url) => url.origin === returnOrigin && !url.pathname.startsWith('/.account/'))
+  const returnedToApplication = (url: URL) =>
+    url.origin === returnOrigin && !url.pathname.startsWith('/.account/')
+  try {
+    await page.waitForURL(returnedToApplication, { timeout: 30_000 })
+  } catch (error) {
+    if (!page.url().includes('/.account/')) throw error
+    console.log(`[e2e ${new Date().toISOString()}] Authorization redirect did not complete within 30s; retrying the consent page once.`)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await waitForConsentAuthorization(page)
+    await page.getByRole('button', { name: 'Authorize', exact: true }).click()
+    await page.waitForURL(returnedToApplication, { timeout: 30_000 })
+  }
 }
 
 export async function authenticateSolidUser (page: Page, user: TestUser): Promise<void> {
@@ -67,14 +78,18 @@ export async function authenticateSolidUser (page: Page, user: TestUser): Promis
     localStorage.clear()
     sessionStorage.clear()
     if (!indexedDB.databases) return
-    await Promise.all((await indexedDB.databases()).map(database => new Promise<void>((resolve) => {
-      if (!database.name) {
-        resolve()
-        return
-      }
-      const request = indexedDB.deleteDatabase(database.name)
-      request.onsuccess = request.onerror = request.onblocked = () => resolve()
-    })))
+    const databases = await indexedDB.databases()
+    await Promise.race([
+      Promise.all(databases.map(database => new Promise<void>((resolve) => {
+        if (!database.name) {
+          resolve()
+          return
+        }
+        const request = indexedDB.deleteDatabase(database.name)
+        request.onsuccess = request.onerror = request.onblocked = () => resolve()
+      }))),
+      new Promise<void>(resolve => setTimeout(resolve, 5_000))
+    ])
   })
   await page.reload({ waitUntil: 'domcontentloaded' })
   // Mirror the solid-ui login button: the OIDC redirect URL cannot carry a

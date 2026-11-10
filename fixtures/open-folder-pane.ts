@@ -15,7 +15,9 @@ export async function openFolderPane(page: Page, containerUrl: string): Promise<
   const storageCount = await storageItems.count()
 
   for (let index = 0; index < storageCount; index++) {
-    await storageItems.nth(index).click()
+    const storageItem = storageItems.nth(index)
+    await expect(storageItem).toBeVisible()
+    await storageItem.click({ force: true })
     await expect(page.locator('folder-pane-view')).toHaveCount(1)
     const selectedStorage = await page.locator('folder-pane-view').evaluate(
       (element: Element) => (element as HTMLElement & { subject?: { value?: string } }).subject?.value

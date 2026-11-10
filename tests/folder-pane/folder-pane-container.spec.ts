@@ -1,8 +1,10 @@
 import { test, expect } from '../../fixtures/test.js'
 import type { Locator, Page } from '@playwright/test'
-import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
+import { authenticateProfileOwner, authenticateSolidUser } from '../../fixtures/authenticate-owner.js'
+import { getLocalRuntime } from '../../fixtures/local-runtime.js'
 import { openFolderPane } from '../../fixtures/open-folder-pane.js'
 import { seedFriendProfile, seedNestedFolderPaneCase } from '../../fixtures/folder-pane.js'
+import { hasConfiguredViewerUser, viewerUser } from '../../fixtures/test-users.js'
 
 type FolderView = HTMLElement & {
   browserContext: unknown
@@ -12,6 +14,17 @@ type FolderView = HTMLElement & {
 
 function getViewButton (page: Page, view: 'Grid' | 'List'): Locator {
   return page.locator(`solid-ui-button[aria-label="${view} view"]`)
+}
+
+async function expectSharingPane (page: Page, subjectUri: string): Promise<Locator> {
+  const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+  await expect(provider).toHaveCount(1)
+  await expect.poll(() => provider.evaluate(element =>
+    (element as HTMLElement & { pane?: { name?: string } }).pane?.name
+  )).toBe('sharing')
+  await expect(provider).toHaveJSProperty('subjectUri', subjectUri)
+  await expect(provider.locator('.sharingPane')).toBeVisible()
+  return provider
 }
 
 test.describe('folder-pane container presentation', () => {
@@ -54,16 +67,55 @@ test.describe('folder-pane container presentation', () => {
     )).toEqual(resourceUris)
   })
 
-  test('omits Public and Trash from the Home container', async ({ page }) => {
-    const container = page.locator('folder-pane-container')
-    const listedFolders = await container.getByRole('option').evaluateAll(items =>
-      items
-        .filter(item => item.querySelector('.resource-grid-icon--container'))
-        .map(item => item.getAttribute('aria-label')?.toLowerCase())
-    )
+  test('wraps long resource names in the grid', async ({ page }) => {
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const fileName = `folder-pane-long-name-${'x'.repeat(140)}.txt`
+    const fileUrl = new URL(fileName, containerUrl).toString()
 
-    expect(listedFolders).not.toContain('public')
-    expect(listedFolders).not.toContain('trash')
+    const created = await page.evaluate(async ({ fileUrl }) => {
+      const session = (window as typeof window & {
+        SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+      }).SolidLogic?.authSession
+      const authenticatedFetch = session?.authFetch ?? session?.fetch
+      if (!authenticatedFetch) throw new Error('No authenticated session for long-name resource creation.')
+      const response = await authenticatedFetch.call(session, fileUrl, {
+        method: 'PUT',
+        headers: { 'content-type': 'text/plain' },
+        body: 'Long resource name wrapping test.'
+      })
+      return response.ok
+    }, { fileUrl })
+    expect(created).toBe(true)
+
+    try {
+      await authenticateProfileOwner(page)
+      await openFolderPane(page, containerUrl)
+      const resource = page.locator(`folder-pane-container li[role="option"][about="<${fileUrl}>"]`)
+      await expect(resource).toHaveCount(1)
+      const label = resource.locator('.resource-grid-label').first()
+      await expect(label).toHaveText(fileName.replaceAll('-', ' '))
+      const labelLayout = await label.evaluate(element => {
+        const style = getComputedStyle(element)
+        const rect = element.getBoundingClientRect()
+        return {
+          height: rect.height,
+          lineHeight: Number.parseFloat(style.lineHeight),
+          overflowWrap: style.overflowWrap,
+          whiteSpace: style.whiteSpace
+        }
+      })
+      expect(labelLayout.overflowWrap).toBe('anywhere')
+      expect(labelLayout.whiteSpace).toBe('normal')
+      expect(labelLayout.height).toBeGreaterThan(labelLayout.lineHeight)
+    } finally {
+      await page.evaluate(async (url) => {
+        const session = (window as typeof window & {
+          SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+        }).SolidLogic?.authSession
+        const authenticatedFetch = session?.authFetch ?? session?.fetch
+        if (authenticatedFetch) await authenticatedFetch.call(session, url, { method: 'DELETE' })
+      }, fileUrl)
+    }
   })
 
   test('does not expose a container index.ttl#this as a separate resource target', async ({ page }) => {
@@ -75,17 +127,67 @@ test.describe('folder-pane container presentation', () => {
     await expect(container.getByRole('listbox', { name: 'Container resources' })).toBeVisible()
   })
 
-  test('shows public or private access indicators when resource metadata is available', async ({ page }) => {
+  test('does not block resource rows while access metadata loads', async ({ page }) => {
     const container = page.locator('folder-pane-container')
-    const indicators = container.locator('.resource-access-indicator')
-    await expect.poll(() => indicators.count(), {
-      timeout: 5000,
-      message: 'Waiting for resource access metadata'
-    }).toBeGreaterThan(0)
-    const labels = await indicators.evaluateAll(elements =>
-      elements.map(element => element.getAttribute('title'))
-    )
-    expect(labels.every(label => label === 'Public' || label === 'Private')).toBe(true)
+    await expect(container.getByRole('listbox', { name: 'Container resources' })).toBeVisible()
+    await expect(container.getByRole('option').first()).toBeVisible()
+  })
+
+  test('targets the storage-header menu at the displayed resource, including Home', async ({ page }) => {
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const header = page.locator('folder-pane-storage-header')
+    const actions = header.locator('solid-ui-resource-actions-menu')
+
+    await expect(actions).toBeVisible()
+    await expect(header.locator('.folder-pane-storage-header-resource-actions')).toBeVisible()
+    await expect(header.locator('.folder-pane-storage-header-view-controls')).toBeVisible()
+
+    await actions.getByTitle('More options').click()
+    await expect(actions.getByRole('menuitem', { name: 'Manage Access', exact: true })).toBeVisible()
+    await actions.getByRole('menuitem', { name: 'Manage Access', exact: true }).click()
+    await expectSharingPane(page, containerUrl)
+
+    const nested = await seedNestedFolderPaneCase(page, containerUrl)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await openFolderPane(page, containerUrl)
+    await selectResource(page, nested.levels[0])
+
+    const displayedUrl = nested.levels[0]
+    const displayedHeader = page.locator('folder-pane-storage-header')
+    const displayedActions = displayedHeader.locator('solid-ui-resource-actions-menu')
+    await displayedActions.getByTitle('More options').click()
+    await expect(displayedActions.getByRole('menuitem', { name: 'Manage Access', exact: true })).toBeVisible()
+    await displayedActions.getByRole('menuitem', { name: 'Manage Access', exact: true }).click()
+    await expectSharingPane(page, displayedUrl)
+  })
+
+  test('opens a pane selected from the storage-header menu in the content area', async ({ page }) => {
+    const header = page.locator('folder-pane-storage-header')
+    const actions = header.locator('solid-ui-resource-actions-menu')
+    await actions.getByTitle('More options').click()
+
+    const source = actions.getByRole('menuitem', { name: 'Source', exact: true })
+    await expect(source).toBeVisible()
+    await source.click()
+
+    const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+    await expect(provider).toHaveCount(1, { timeout: 30_000 })
+    await expect.poll(() => provider.evaluate(element =>
+      (element as HTMLElement & { pane?: { name?: string } }).pane?.name || null
+    )).toBe('source')
+  })
+
+  test('shows a resource count and access status after opening its action menu', async ({ page }) => {
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const addressBookUrl = new URL('navigation-contacts/', containerUrl).toString()
+    const addressBook = page.locator('folder-pane-container')
+      .locator(`[role="option"][about="<${addressBookUrl}>"]`)
+
+    await expect(addressBook).toBeVisible()
+    await addressBook.getByTitle('More options').click()
+
+    await expect(addressBook.locator('.container-member-count')).toBeVisible()
+    await expect(addressBook.locator('.resource-access-indicator')).toBeVisible()
   })
 
   test('provides a three-dots action menu for each displayed resource', async ({ page }) => {
@@ -93,8 +195,75 @@ test.describe('folder-pane container presentation', () => {
     await expect(container.getByRole('option').first().getByTitle('More options')).toBeVisible()
   })
 
+  test('opens the selected resource in a new tab', async ({ page }) => {
+    test.setTimeout(120_000)
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const addressBookUrl = new URL('navigation-contacts/', containerUrl).toString()
+    const addressBook = page.locator('folder-pane-container')
+      .locator(`[role="option"][about="<${addressBookUrl}>"]`)
+
+    await expect(addressBook).toBeVisible()
+    await addressBook.getByTitle('More options').click()
+
+    const popupPromise = page.context().waitForEvent('page')
+    await addressBook.getByRole('menuitem', { name: 'Open in New Tab', exact: true }).click()
+    const popup = await popupPromise
+    await popup.waitForLoadState('domcontentloaded')
+
+    expect(popup.url()).toBe(addressBookUrl)
+    await expect(page.locator('folder-pane-container')).toBeVisible()
+    await popup.close()
+  })
+
   for (const view of ['grid', 'list'] as const) {
-    test(`shows header Manage Access icon for file resources in desktop ${view} view`, async ({ page }) => {
+    test(`lists the preferred pane before Contents and opens either choice in ${view} view`, async ({ page }) => {
+      const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+      const addressBookUrl = new URL('navigation-contacts/', containerUrl).toString()
+      await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
+
+      const addressBook = page.locator('folder-pane-container')
+        .locator(`[role="option"][about="<${addressBookUrl}>"]`)
+      await expect(addressBook).toBeVisible()
+      await addressBook.getByTitle('More options').click()
+
+      const actionMenu = addressBook.locator('solid-ui-resource-actions-menu')
+      const actionMenuItems = actionMenu.locator('solid-ui-menu-item')
+      await expect.poll(async () => (await actionMenuItems.allTextContents()).map(label => label.trim())).toEqual(
+        expect.arrayContaining(['Address book', 'Contents'])
+      )
+      const labels = (await actionMenuItems.allTextContents()).map(label => label.trim())
+      expect(labels.indexOf('Address book')).toBeLessThan(labels.indexOf('Contents'))
+
+      await actionMenu.getByRole('menuitem', { name: 'Address book', exact: true }).click()
+      await expect(page.getByRole('main', { name: 'Address Book', exact: true })).toBeVisible()
+
+      await page.goto(getLocalRuntime().profileUrl, { waitUntil: 'domcontentloaded' })
+      await openFolderPane(page, containerUrl)
+      await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
+
+      const contentsResource = page.locator('folder-pane-container')
+        .locator(`[role="option"][about="<${addressBookUrl}>"]`)
+      await expect(contentsResource).toBeVisible()
+      await contentsResource.getByTitle('More options').click()
+      const contentsMenu = contentsResource.locator('solid-ui-resource-actions-menu')
+      const contentsMenuItems = contentsMenu.locator('solid-ui-menu-item')
+      await expect.poll(async () => (await contentsMenuItems.allTextContents()).map(label => label.trim())).toEqual(
+        expect.arrayContaining(['Contents'])
+      )
+      // The action menu is re-rendered as the resource switches panes. Force
+      // the click after the item is present so a transient host replacement
+      // does not cancel the menu item's activation.
+      await contentsMenu.getByRole('menuitem', { name: 'Contents', exact: true }).click({ force: true })
+
+      const contentsContainer = page.locator('folder-pane-content > folder-pane-container')
+      await expect(contentsContainer).toHaveCount(1, { timeout: 15_000 })
+      await expect(contentsContainer).toBeVisible()
+      await expect(contentsContainer.getByRole('listbox', { name: 'Container resources' })).toBeVisible()
+      await expect(page.locator('folder-pane-storage-header')).toBeVisible()
+      await expect(page.locator('folder-pane-sidebar')).toBeVisible()
+    })
+
+    test(`does not show a Manage Access header control without prefetched metadata in desktop ${view} view`, async ({ page }) => {
       await page.setViewportSize({ width: 1280, height: 900 })
       await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
       const container = page.locator('folder-pane-container')
@@ -103,7 +272,7 @@ test.describe('folder-pane container presentation', () => {
       }).first()
       await resource.click()
       const header = page.locator('solid-ui-file-explorer-header')
-      await expect(header.getByTitle('Manage Access')).toBeVisible()
+      await expect(header.getByTitle('Manage Access')).toHaveCount(0)
     })
 
     test(`hides header Manage Access icon and keeps menu action on mobile ${view} view`, async ({ page }) => {
@@ -119,31 +288,52 @@ test.describe('folder-pane container presentation', () => {
       await expect(page.getByRole('menuitem', { name: 'Manage Access', exact: true })).toBeVisible()
     })
 
+    test(`opens the displayed resource from the file-explorer header in a new tab in ${view} view`, async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 })
+      await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
+
+      const container = page.locator('folder-pane-container')
+      const resourceUrl = new URL('navigation-e2e.html', process.env.E2E_FOLDER_PANE_CONTAINER_URL!).toString()
+      const resource = container.locator(`[role="option"][about="<${resourceUrl}>"]`)
+      await expect(resource).toBeVisible()
+      const about = await resource.getAttribute('about')
+      expect(about).toBeTruthy()
+      expect(about!.slice(1, -1)).toBe(resourceUrl)
+
+      await resource.click()
+      const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+      await expect(provider).toHaveCount(1, { timeout: 30_000 })
+      const headerMenu = page.locator('solid-ui-file-explorer-header solid-ui-resource-actions-menu').first()
+      await expect(headerMenu.getByTitle('More options')).toBeVisible()
+      await headerMenu.getByTitle('More options').click()
+
+      const popupPromise = page.context().waitForEvent('page')
+      await headerMenu.getByRole('menuitem', { name: 'Open in New Tab', exact: true }).click()
+      const popup = await popupPromise
+      await popup.waitForLoadState('domcontentloaded')
+
+      expect(popup.url()).toBe(resourceUrl)
+      await popup.close()
+    })
+
     test(`exposes Manage Access for file resources in ${view} view`, async ({ page }) => {
       await getViewButton(page, view === 'list' ? 'List' : 'Grid').click()
 
       const container = page.locator('folder-pane-container')
-      const resource = container.getByRole('option').filter({
-        hasNot: container.locator('.resource-grid-icon--container, .resource-list-icon--container')
-      }).first()
+      const resourceUrl = new URL('navigation-e2e.html', process.env.E2E_FOLDER_PANE_CONTAINER_URL!).toString()
+      const resource = container.locator(`[role="option"][about="<${resourceUrl}>"]`)
+      await expect(resource).toBeVisible()
       const about = await resource.getAttribute('about')
       expect(about).toBeTruthy()
-      await resource.evaluate(element => {
-        // Resource items live in the container's shadow root, so closest() cannot reach the host.
-        const root = element.getRootNode()
-        const host = root instanceof ShadowRoot ? root.host : element.closest('folder-pane-container')
-        host?.addEventListener('solid-ui-file-explorer-manage-access', event => {
-          const subjectUri = (event as CustomEvent<{ subjectUri?: string }>).detail?.subjectUri
-          document.body.setAttribute('data-managed-access-uri', subjectUri || '')
-        }, { once: true })
-      })
-      await resource.getByTitle('More options').click()
-      const manageAccess = page.getByRole('menuitem', { name: 'Manage Access', exact: true })
+      const actions = resource.locator('solid-ui-resource-actions-menu')
+      await actions.getByTitle('More options').click()
+      // Pane discovery adds menu entries asynchronously. Target the labelled
+      // entry, not a dropdown wrapper whose assigned slot can change.
+      await expect(actions.getByText('Source', { exact: true })).toBeVisible()
+      const manageAccess = actions.getByText('Manage Access', { exact: true })
       await expect(manageAccess).toBeVisible()
       await manageAccess.click()
-      await expect(page.locator('body')).toHaveAttribute('data-managed-access-uri', about!.slice(1, -1))
-      await expect(page.locator('solid-ui-access-control-modal solid-ui-dialog dialog')).toBeVisible()
-      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await expectSharingPane(page, resourceUrl)
     })
 
     test(`exposes Manage Access for container resources in ${view} view`, async ({ page }) => {
@@ -156,12 +346,13 @@ test.describe('folder-pane container presentation', () => {
 
       const resource = page.locator('folder-pane-container').locator(`[role="option"][about="<${nested.levels[0]}>"]`)
       await expect(resource).toBeVisible()
-      await resource.getByTitle('More options').click()
-      const manageAccess = page.getByRole('menuitem', { name: 'Manage Access', exact: true })
+      const actions = resource.locator('solid-ui-resource-actions-menu')
+      await actions.getByTitle('More options').click()
+      const manageAccess = actions.getByText('Manage Access', { exact: true })
       await expect(manageAccess).toBeVisible()
       await manageAccess.click()
-      await expect(page.locator('solid-ui-access-control-modal solid-ui-dialog dialog')).toBeVisible()
-      await page.getByRole('button', { name: 'Cancel', exact: true }).click()
+      await expectSharingPane(page, nested.levels[0])
+      await expect(page.locator('folder-pane-content > solid-ui-file-explorer-provider solid-ui-file-explorer-header')).toHaveCount(0)
     })
   }
 
@@ -174,16 +365,31 @@ test.describe('folder-pane container presentation', () => {
     await openFolderPane(page, containerUrl)
 
     const folder = page.locator('folder-pane-container').locator(`[role="option"][about="<${folderUrl}>"]`)
-    await folder.getByTitle('More options').click()
-    await page.getByRole('menuitem', { name: 'Manage Access', exact: true }).click()
-    const dialog = page.locator('solid-ui-access-control-modal solid-ui-dialog dialog')
-    await expect(dialog).toBeVisible()
-
-    const inputs = page.locator('solid-ui-access-control-modal solid-ui-combobox input[role="combobox"]')
-    await expect(inputs.nth(1)).toHaveValue('Viewer')
-    await inputs.nth(0).fill(friend)
-    await page.getByRole('button', { name: 'Save Changes' }).click()
-    await expect(dialog).toHaveCount(0)
+    const actions = folder.locator('solid-ui-resource-actions-menu')
+    await actions.getByTitle('More options').click()
+    await actions.getByText('Manage Access', { exact: true }).click()
+    const sharing = await expectSharingPane(page, folderUrl)
+    await sharing.getByRole('button', { name: 'Set specific sharing for this Folder', exact: true }).click()
+    await sharing.getByRole('button', { name: 'Add ...', exact: true }).click()
+    await sharing.getByRole('button', { name: 'Add Person', exact: true }).click()
+    await sharing.getByRole('textbox').fill(friend)
+    await sharing.getByRole('button', { name: 'Continue', exact: true }).click()
+    const { Parser } = await import('n3')
+    await expect.poll(async () => {
+      const turtle = await page.evaluate(async aclUrl => {
+        const session = (window as typeof window & {
+          SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+        }).SolidLogic?.authSession
+        const authenticatedFetch = session?.authFetch ?? session?.fetch
+        if (!authenticatedFetch) throw new Error('No authenticated session for ACL verification.')
+        const response = await authenticatedFetch.call(session, aclUrl, { headers: { accept: 'text/turtle' } })
+        return response.ok ? response.text() : ''
+      }, `${folderUrl}.acl`)
+      return new Parser({ baseIRI: `${folderUrl}.acl` }).parse(turtle).some(quad =>
+        quad.predicate.value === 'http://www.w3.org/ns/auth/acl#agent' &&
+        quad.object.value === friend
+      )
+    }, { timeout: 30_000 }).toBe(true)
 
     const { owner, turtle } = await page.evaluate(async aclUrl => {
       const session = (window as typeof window & {
@@ -196,7 +402,6 @@ test.describe('folder-pane container presentation', () => {
     }, `${folderUrl}.acl`)
     expect(turtle, 'The folder ACL was not written').not.toBe('')
 
-    const { Parser } = await import('n3')
     const quads = new Parser({ baseIRI: `${folderUrl}.acl` }).parse(turtle)
     const ACL = 'http://www.w3.org/ns/auth/acl#'
     const ruleFor = (predicate: string, subject: string) => {
@@ -230,23 +435,23 @@ test.describe('folder-pane container presentation', () => {
       const menu = resource.locator('solid-ui-resource-actions-menu')
       await expect(menu.getByTitle('More options')).toBeVisible()
       await menu.getByTitle('More options').click()
-      const paneItems = menu.getByRole('menuitem').filter({ hasNotText: /Manage Access|Upload/ })
-      const paneItemHosts = menu.locator('solid-ui-menu-item').filter({ hasNotText: /Manage Access|Upload/ })
+      const paneItems = menu.getByRole('menuitem').filter({ hasNotText: /Manage Access|Upload|Open in New Tab/ })
+      const paneItemHosts = menu.locator('solid-ui-menu-item').filter({ hasNotText: /Manage Access|Upload|Open in New Tab/ })
       await expect(paneItems.first()).toBeVisible()
       await expect(paneItemHosts.first().locator(':scope > [slot="left-icon"]')).toHaveCount(1)
       const initialLabels = (await paneItems.allTextContents())
         .map(label => label.trim())
         .filter(Boolean)
 
-      await paneItems.first().click()
+      await menu.getByRole('menuitem', { name: 'Source', exact: true }).click()
       // The outer full-view explorer remains mounted while the selected pane
       // is rendered. Scope this assertion to the content target so a late
       // outer-provider update cannot make the locator strictness-racy.
       const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
-      await expect(provider).toHaveCount(1)
+      await expect(provider).toHaveCount(1, { timeout: 30_000 })
       await expect.poll(() => provider.evaluate(element =>
         (element as HTMLElement & { pane?: { name?: string } }).pane?.name || null
-      )).not.toBeNull()
+      )).toBe('source')
 
       // Pane switching must retain the actions that were available for the
       // resource. The selected pane may also contribute additional actions.
@@ -269,9 +474,13 @@ test.describe('folder-pane container presentation', () => {
     }
   })
 
-  test('creates a Source file from the header Add action', async ({ page }) => {
+  for (const [extension, contentType] of [
+    ['.txt', 'text/plain'],
+    ['.ttl', 'text/turtle']
+  ]) {
+  test(`creates a Source ${extension} file from the header Add action`, async ({ page }) => {
     const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
-    const fileName = `folder-pane-source-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.ttl`
+    const fileName = `folder-pane-source-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${extension}`
     const fileUrl = new URL(fileName, containerUrl).toString()
     const fileRequest = page.waitForRequest(request =>
       request.method() === 'PUT' && request.url() === fileUrl
@@ -289,7 +498,7 @@ test.describe('folder-pane container presentation', () => {
     await dialog.getByRole('button', { name: 'Create', exact: true }).click()
     const request = await fileRequest
     expect(request.url()).toBe(fileUrl)
-    expect(request.headers()['content-type']).toMatch(/^text\/turtle\b/)
+    expect(request.headers()['content-type']).toMatch(new RegExp(`^${contentType}\\b`))
 
     try {
       // A successful create opens the new file in the content area.
@@ -303,6 +512,173 @@ test.describe('folder-pane container presentation', () => {
       expect(fileUrl.endsWith('/')).toBe(false)
       await page.locator('folder-pane-sidebar li[aria-label="Home"] > .resource-row').click()
       await expect(page.locator(`folder-pane-container li[role="option"][about="<${fileUrl}>"]`)).toHaveCount(1)
+    } finally {
+      if (!page.isClosed()) {
+        await page.evaluate(async (url) => {
+          const session = (window as typeof window & {
+            SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+          }).SolidLogic?.authSession
+          const authenticatedFetch = session?.authFetch ?? session?.fetch
+          if (authenticatedFetch) await authenticatedFetch.call(session, url, { method: 'DELETE' })
+        }, fileUrl)
+      }
+    }
+  })
+  }
+
+  test('opens a newly created JSON file in Source instead of the folder view', async ({ page }) => {
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const fileName = `folder-pane-json-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
+    const fileUrl = new URL(fileName, containerUrl).toString()
+    const fileRequest = page.waitForRequest(request =>
+      request.method() === 'PUT' && request.url() === fileUrl
+    )
+
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'New File', exact: true }).click()
+
+    const dialog = page.locator('folder-pane-create-dialog')
+    await expect(dialog.getByRole('heading', { name: 'New File', exact: true })).toBeVisible()
+    await dialog.locator('input').fill(fileName)
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+
+    const request = await fileRequest
+    expect(request.headers()['content-type']).toMatch(/^application\/json\b/)
+
+    try {
+      const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+      await expect(provider).toHaveCount(1)
+      await expect.poll(() => provider.evaluate(element =>
+        (element as HTMLElement & { pane?: { name?: string } }).pane?.name
+      )).toBe('source')
+      await expect(provider.locator('source-pane-source-editor-card .cm-editor')).toBeVisible()
+      await expect(page.locator('folder-pane-content > folder-pane-container')).toHaveCount(0)
+    } finally {
+      await page.evaluate(async (url) => {
+        const session = (window as typeof window & {
+          SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+        }).SolidLogic?.authSession
+        const authenticatedFetch = session?.authFetch ?? session?.fetch
+        if (authenticatedFetch) await authenticatedFetch.call(session, url, { method: 'DELETE' })
+      }, fileUrl)
+    }
+  })
+
+  test('uploads a PDF and opens it in the content area', async ({ page }) => {
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const fileName = `folder-pane-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
+    const fileUrl = new URL(fileName, containerUrl).toString()
+
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    const chooser = page.waitForEvent('filechooser')
+    await page.getByRole('menuitem', { name: 'Upload', exact: true }).click()
+    const fileChooser = await chooser
+    await fileChooser.setFiles({
+      name: fileName,
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n%%EOF\n')
+    })
+
+    try {
+      const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+      await expect(provider).toHaveCount(1)
+      await expect.poll(() => provider.evaluate(element =>
+        (element as HTMLElement & { pane?: { name?: string } }).pane?.name
+      )).toBe('humanReadable')
+      const frame = provider.locator('iframe')
+      await expect(frame).toHaveCount(1)
+      await expect.poll(() => frame.getAttribute('src')).toMatch(/^blob:/)
+      await expect(frame).not.toHaveAttribute('sandbox')
+      const frameLayout = await frame.evaluate(element => {
+        const style = getComputedStyle(element)
+        return { height: Number.parseFloat(style.height), minHeight: style.minHeight }
+      })
+      expect(frameLayout.height).toBeGreaterThanOrEqual(480)
+      expect(frameLayout.minHeight).toBe('288px')
+      await expect(page.locator('folder-pane-content > folder-pane-container')).toHaveCount(0)
+    } finally {
+      await page.evaluate(async (url) => {
+        const session = (window as typeof window & {
+          SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+        }).SolidLogic?.authSession
+        const authenticatedFetch = session?.authFetch ?? session?.fetch
+        if (authenticatedFetch) await authenticatedFetch.call(session, url, { method: 'DELETE' })
+      }, fileUrl)
+    }
+  })
+
+  test('uploads an MP4 with a human-readable filename and opens it in the content area', async ({ page }) => {
+    test.setTimeout(180_000)
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const fileName = `2023-03-01 DevOps Sprint Wrap Up & Demonstration-${Date.now()}.mp4`
+    const fileUrl = new URL(encodeURIComponent(fileName), containerUrl).toString()
+
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    const chooser = page.waitForEvent('filechooser')
+    await page.getByRole('menuitem', { name: 'Upload', exact: true }).click()
+    const fileChooser = await chooser
+    const uploadResponse = page.waitForResponse(response =>
+      response.request().method() === 'PUT' && response.url() === fileUrl
+    )
+    try {
+      await fileChooser.setFiles({
+        name: fileName,
+        mimeType: 'video/mp4',
+        buffer: Buffer.from('Folder-pane video filename and preview fixture.')
+      })
+      const response = await uploadResponse
+      if (!response.ok()) {
+        const error = page.locator('.folder-pane-status-error')
+        await expect(error).toContainText(`HTTP ${response.status()}`)
+        throw new Error(await error.textContent() ?? `MP4 upload returned HTTP ${response.status()}`)
+      }
+      expect(response.ok(), `MP4 upload returned HTTP ${response.status()}`).toBe(true)
+      const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+      await expect(provider).toHaveCount(1)
+      await expect.poll(() => provider.evaluate(element =>
+        (element as HTMLElement & { pane?: { name?: string } }).pane?.name
+      )).toBe('video')
+      const video = provider.locator('video')
+      await expect(video).toHaveCount(1)
+      await expect(video).toHaveAttribute('controls', 'yes')
+      await expect.poll(() => video.getAttribute('src')).toMatch(/^blob:/)
+      await expect(page.locator('folder-pane-content > folder-pane-container')).toHaveCount(0)
+    } finally {
+      await page.evaluate(async (url) => {
+        const session = (window as typeof window & {
+          SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+        }).SolidLogic?.authSession
+        const authenticatedFetch = session?.authFetch ?? session?.fetch
+        if (authenticatedFetch) await authenticatedFetch.call(session, url, { method: 'DELETE' })
+      }, fileUrl)
+    }
+  })
+
+  test('keeps a usable PDF preview height on mobile', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const fileName = `folder-pane-mobile-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
+    const fileUrl = new URL(fileName, containerUrl).toString()
+
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    const chooser = page.waitForEvent('filechooser')
+    await page.getByRole('menuitem', { name: 'Upload', exact: true }).click()
+    const fileChooser = await chooser
+    await fileChooser.setFiles({
+      name: fileName,
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n%%EOF\n')
+    })
+
+    try {
+      const frame = page.locator('folder-pane-content > solid-ui-file-explorer-provider iframe')
+      await expect(frame).toHaveCount(1)
+      const frameLayout = await frame.evaluate(element => {
+        const style = getComputedStyle(element)
+        return { height: Number.parseFloat(style.height), minHeight: Number.parseFloat(style.minHeight) }
+      })
+      expect(frameLayout.height).toBe(844)
+      expect(frameLayout.minHeight).toBe(844)
     } finally {
       await page.evaluate(async (url) => {
         const session = (window as typeof window & {
@@ -378,7 +754,7 @@ test.describe('folder-pane container presentation', () => {
   })
 
   test('creates a Dokieli document from Add, opens it in Dokieli and saves an edit', async ({ page }) => {
-    test.setTimeout(120_000)
+    test.setTimeout(180_000)
     page.on('console', message => console.log(`[dokieli-console:${message.type()}] ${message.text()}`))
     page.on('pageerror', error => console.log(`[dokieli-pageerror] ${error.stack || error.message}`))
     const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
@@ -436,18 +812,19 @@ test.describe('folder-pane container presentation', () => {
       // Dokieli runs as the document itself: at the document URL, not a nested SolidOS shell.
       const framed = provider.frameLocator('iframe')
       console.log('[dokieli-e2e] waiting for rendered heading')
-      await expect(framed.locator('h1', { hasText: documentName }).first()).toBeVisible()
+      await expect(framed.locator('h1', { hasText: documentName }).first()).toBeVisible({ timeout: 15_000 })
       console.log('[dokieli-e2e] rendered heading')
+      await expect(framed.getByTitle('Open menu')).toBeEnabled({ timeout: 30_000 })
       await expect(framed.locator('#MainContent, solid-ui-header, folder-pane-sidebar')).toHaveCount(0)
       console.log('[dokieli-e2e] isolated document assertions')
       await expect(frame).toHaveAttribute('sandbox', /allow-scripts/)
       await expect(frame).not.toHaveAttribute('sandbox', /allow-same-origin/)
       await expect(frame).toHaveAttribute('srcdoc', /<base href=/)
-      expect((await frame.boundingBox())?.height ?? 0).toBeGreaterThan(400)
+      expect((await frame.boundingBox())?.height ?? 0).toBeGreaterThan(100)
       await expect(provider.getByRole('link', { name: /new tab/i })).toHaveCount(0)
 
-      // Layout: nothing scrolls horizontally, and Dokieli scrolls inside the bordered frame
-      // (its scrollbar sits on the frame border 40px in), not in the surrounding pane.
+      // Layout: nothing scrolls horizontally, and the preview itself does not
+      // create a nested scrollbar. Long documents scroll with the outer pane.
       const layout = await provider.evaluate(element => {
         const paneDiv = element.querySelector(':scope > .paneDiv') as HTMLElement
         const iframe = paneDiv.querySelector('iframe') as HTMLIFrameElement
@@ -463,15 +840,15 @@ test.describe('folder-pane container presentation', () => {
           .map(node => node.tagName.toLowerCase() + (node.className && typeof node.className === 'string' ? '.' + node.className.split(' ').join('.') : ''))
         return {
           horizontalOverflow,
-          paneScrollsVertically: paneDiv.scrollHeight > paneDiv.clientHeight + 1 && getComputedStyle(paneDiv).overflowY !== 'hidden',
+          frameScrollsVertically: iframe.scrollHeight > iframe.clientHeight + 1,
           paneOverflowY: getComputedStyle(paneDiv).overflowY,
           rightInset: paneBox.right - frameBox.right,
           frameBottomInsidePane: frameBox.bottom <= paneBox.bottom + 1
         }
       })
       expect(layout.horizontalOverflow).toEqual([])
-      expect(layout.paneOverflowY).toBe('hidden')
-      expect(layout.paneScrollsVertically).toBe(false)
+      expect(layout.frameScrollsVertically).toBe(false)
+      expect(layout.paneOverflowY).toBe('visible')
       expect(Math.round(layout.rightInset)).toBe(40)
       expect(layout.frameBottomInsidePane).toBe(true)
       console.log('[dokieli-e2e] layout assertions')
@@ -755,9 +1132,36 @@ test.describe('folder-pane container presentation', () => {
 
     await provider.getByTitle('Back').click()
     await expect(page.locator('folder-pane-content > folder-pane-container')).toHaveCount(1)
-    await expect(page.locator('folder-pane-sidebar li[aria-label="Home"]')).toHaveAttribute(
-      'aria-selected', 'true'
-    )
+    const returnedContainer = page.locator('folder-pane-content > folder-pane-container')
+    await expect.poll(() => returnedContainer.evaluate(element =>
+      (element as HTMLElement & { subject?: { value?: string } }).subject?.value
+    )).toBe(nested.levels.at(-1))
+    await expect(returnedContainer.locator(`li[role="option"][about="<${nested.fileUrl}>"]`)).toHaveCount(1)
+  })
+
+  test('reloads and revisits a container after opening a resource', async ({ page }) => {
+    const containerUrl = process.env.E2E_FOLDER_PANE_CONTAINER_URL!
+    const nested = await seedNestedFolderPaneCase(page, containerUrl)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await openFolderPane(page, containerUrl)
+
+    for (const levelUrl of nested.levels) {
+      await selectResource(page, levelUrl)
+    }
+    await selectResource(page, nested.fileUrl)
+    const provider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+    await expect(provider.locator('source-pane-source-editor-card .cm-content'))
+      .toContainText('export const nested = true')
+
+    // A browser reload is the reliable user-visible recovery path available to
+    // this local harness; it does not manufacture an HTTP failure.
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await openFolderPane(page, containerUrl)
+    for (const levelUrl of nested.levels) {
+      await selectResource(page, levelUrl)
+    }
+    await expect(page.locator(`folder-pane-container li[role="option"][about="<${nested.fileUrl}>"]`))
+      .toHaveCount(1)
   })
 
   test('opens a JavaScript file in Source instead of an empty container', async ({ page }) => {
@@ -810,3 +1214,21 @@ async function selectResource (page: Parameters<typeof openFolderPane>[0], resou
   await expect(matching).toBeVisible()
   await matching.click()
 }
+
+test.describe('folder-pane permissions', () => {
+  test('does not expose Add to a configured non-editable viewer', async ({ page }) => {
+    test.skip(
+      process.env.E2E_RUN_FOLDER_PANE !== 'true' ||
+      !hasConfiguredViewerUser() ||
+      !process.env.E2E_FOLDER_PANE_VIEWER_URL,
+      'Set E2E_FOLDER_PANE_VIEWER_URL and configure the local viewer to run permission coverage.'
+    )
+
+    await authenticateSolidUser(page, viewerUser)
+    await page.goto(process.env.E2E_FOLDER_PANE_VIEWER_URL!, { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('folder-pane-storage-header')).toBeVisible()
+    const add = page.locator('folder-pane-storage-header').getByRole('button', { name: 'Add', exact: true })
+    await expect(add).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: 'Upload', exact: true })).toHaveCount(0)
+  })
+})

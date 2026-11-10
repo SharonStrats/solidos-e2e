@@ -1,5 +1,5 @@
 import { expect, test } from '../../fixtures/test.js'
-import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
+import { authenticateProfileOwner, loginOwnerFromPage } from '../../fixtures/authenticate-owner.js'
 import { getLocalRuntime } from '../../fixtures/local-runtime.js'
 import {
   readAuthenticatedResource,
@@ -171,11 +171,32 @@ test.describe('authenticated mashlib databrowser', () => {
     )
   })
 
+  test('appends the resize script and preserves reported HTML height for fragments', async ({ page }) => {
+    const fragmentUrl = new URL('long-fragment.html', seed.containerUrl).toString()
+    await writeAuthenticatedResource(
+      page,
+      fragmentUrl,
+      '<main style="height: 1600px">HTML fragment without a closing body tag</main>',
+      'text/html'
+    )
+    await page.goto(fragmentUrl, { waitUntil: 'domcontentloaded' })
+
+    const preview = page.locator('iframe[name="solidos-human-readable-preview"]')
+    await expect(preview).toHaveAttribute('srcdoc', /solidos-preview-size/)
+    const layout = await preview.evaluate(element => ({
+      height: Number.parseFloat(getComputedStyle(element).height),
+      flexShrink: getComputedStyle(element).flexShrink
+    }))
+    expect(layout.height).toBeGreaterThanOrEqual(1600)
+    expect(layout.flexShrink).toBe('0')
+  })
+
   test('uses the actual MIME type when cached metadata identifies a resource as non-HTML', async ({ page }) => {
     await page.goto(seed.mimeMismatchUrl, { waitUntil: 'domcontentloaded' })
     const preview = page.locator('iframe[name="solidos-human-readable-preview"]')
     await expect(preview).toHaveCount(0)
 
+    await loginOwnerFromPage(page, seed.mimeMismatchUrl)
     await writeAuthenticatedResource(
       page,
       seed.mimeMismatchUrl,

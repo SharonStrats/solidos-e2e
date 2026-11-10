@@ -61,9 +61,20 @@ let runtimeNeedsSetup = !existsSync(runtimeFile)
 if (!runtimeNeedsSetup) {
   try {
     const existingRuntime = JSON.parse(readFileSync(runtimeFile, 'utf8'))
-    runtimeNeedsSetup = !existingRuntime.profileFile || !existsSync(existingRuntime.profileFile)
+    const requiredRuntimeFields = [
+      existingRuntime.authenticated === true,
+      Boolean(existingRuntime.email && existingRuntime.password),
+      Boolean(existingRuntime.profileFile && existsSync(existingRuntime.profileFile)),
+      Boolean(existingRuntime.profileUrl && existingRuntime.podUrl && existingRuntime.webId),
+      Boolean(existingRuntime.storageState && existsSync(existingRuntime.storageState))
+    ]
+    runtimeNeedsSetup = requiredRuntimeFields.some(value => !value)
+    if (runtimeNeedsSetup) {
+      console.log(`[e2e-local ${new Date().toISOString()}] Existing runtime is incomplete or unauthenticated; recreating disposable runtime`)
+    }
   } catch {
     runtimeNeedsSetup = true
+    console.log(`[e2e-local ${new Date().toISOString()}] Existing runtime state is unreadable; recreating disposable runtime`)
   }
 }
 

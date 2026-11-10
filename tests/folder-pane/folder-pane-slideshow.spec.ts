@@ -1,5 +1,6 @@
 import { test, expect } from '../../fixtures/test.js'
 import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
+import { getLocalRuntime } from '../../fixtures/local-runtime.js'
 import { openFolderPane } from '../../fixtures/open-folder-pane.js'
 import { seedSlideshowFolderPaneCase } from '../../fixtures/folder-pane.js'
 
@@ -27,8 +28,11 @@ test.describe('folder-pane slideshow', () => {
     await expect(soloProvider).toHaveCount(1)
     await expect.poll(() => soloProvider.evaluate((element: ExplorerProvider) => element.pane?.name || null))
       .toBe('slideshow')
-    await expect(soloProvider.locator('solid-ui-file-explorer-header')).toHaveCount(0)
+    const soloHeader = soloProvider.locator('solid-ui-file-explorer-header')
+    await expect(soloHeader).toHaveCount(0)
+    await expect(soloProvider.locator('folder-pane-sidebar')).toHaveCount(0)
 
+    await page.goto(getLocalRuntime().profileUrl, { waitUntil: 'domcontentloaded' })
     await openFolderPane(page, podUrl)
     const resource = page.locator(`folder-pane-container [role="option"][about="<${slideshow.containerUrl}>"]`)
     await expect(resource).toBeVisible()
@@ -57,5 +61,27 @@ test.describe('folder-pane slideshow', () => {
     await expect(figures.nth(0)).not.toHaveClass(/bss-show/)
     await regularProvider.locator('.bss-prev').click()
     await expect(figures.nth(0)).toHaveClass(/bss-show/)
+
+    await expect(regularProvider.locator('solid-ui-file-explorer-header')).toHaveCount(0)
+    await expect(regularProvider.locator('folder-pane-sidebar')).toHaveCount(0)
+    await expect(regularProvider.locator('folder-pane-storage-header')).toHaveCount(0)
+
+    await page.goto(getLocalRuntime().profileUrl, { waitUntil: 'domcontentloaded' })
+    await openFolderPane(page, podUrl)
+    await page.locator('folder-pane-storage-header solid-ui-button[aria-label="List view"]').click()
+    const listResource = page.locator(`folder-pane-container [role="option"][about="<${slideshow.containerUrl}>"]`)
+    await expect(listResource).toBeVisible()
+    await listResource.getByTitle('More options').click()
+    await expect(page.getByRole('menuitem', { name: 'Manage Access', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await listResource.click()
+
+    const listProvider = page.locator('folder-pane-content > solid-ui-file-explorer-provider')
+    await expect(listProvider).toHaveCount(1)
+    await expect.poll(() => listProvider.evaluate((element: ExplorerProvider) => element.pane?.name || null))
+      .toBe('slideshow')
+    await expect(listProvider.locator('solid-ui-file-explorer-header')).toHaveCount(0)
+    await expect(listProvider.locator('folder-pane-sidebar')).toHaveCount(0)
+    await expect(listProvider.locator('folder-pane-storage-header')).toHaveCount(0)
   })
 })

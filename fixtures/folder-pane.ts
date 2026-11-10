@@ -21,6 +21,16 @@ export type SlideshowFolderPaneCase = {
   imageUrls: [string, string]
 }
 
+export type MobileFolderPaneCase = {
+  lastResourceUrl: string
+}
+
+export type ResizeRegressionFolderPaneCase = {
+  containerUrl: string
+  imageUrl: string
+  sourceUrl: string
+}
+
 type MintablePane = {
   name: string
   mintClass: string
@@ -62,10 +72,10 @@ export async function seedRepresentativeFolderPaneCases (
     cases.push({ resourceUrl, paneName: pane.name })
   }
 
-  const javascriptSlug = `folder-pane-representative-${runId}.js`
-  const javascriptUrl = new URL(javascriptSlug, containerUrl).toString()
-  await createResource(page, containerUrl, javascriptSlug, 'export const seeded = true\n', 'text/javascript')
-  cases.push({ resourceUrl: javascriptUrl, paneName: 'source' })
+  const sourceSlug = `folder-pane-representative-${runId}.js`
+  const sourceUrl = new URL(sourceSlug, containerUrl).toString()
+  await createResource(page, containerUrl, sourceSlug, 'export const seeded = true\n', 'text/javascript')
+  cases.push({ resourceUrl: sourceUrl, paneName: 'source' })
   return cases
 }
 
@@ -165,7 +175,52 @@ export async function seedSlideshowFolderPaneCase (
   return { containerUrl: slideshowContainer, imageUrls }
 }
 
-async function createContainer (page: Page, parentUrl: string, slug: string): Promise<string> {
+export async function seedMobileFolderPaneCase (
+  page: Page,
+  containerUrl: string
+): Promise<MobileFolderPaneCase> {
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const names = Array.from({ length: 25 }, (_, index) =>
+    `folder-pane-mobile-scroll-${runId}-${String(index).padStart(2, '0')}.txt`
+  )
+
+  for (const name of names) {
+    await createResource(page, containerUrl, name, `Mobile scroll test: ${name}\n`, 'text/plain')
+  }
+
+  return {
+    lastResourceUrl: new URL(names.at(-1)!, containerUrl).toString()
+  }
+}
+
+export async function seedResizeRegressionFolderPaneCase (
+  page: Page,
+  containerUrl: string
+): Promise<ResizeRegressionFolderPaneCase> {
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const resourceContainer = await createContainer(page, containerUrl, `folder-pane-resize-${runId}`)
+  const imageUrl = new URL('resize-regression-image.svg', resourceContainer).toString()
+  const sourceUrl = new URL('resize-regression-source.js', resourceContainer).toString()
+
+  await Promise.all([
+    putResource(
+      page,
+      imageUrl,
+      '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="teal"/></svg>',
+      'image/svg+xml'
+    ),
+    putResource(
+      page,
+      sourceUrl,
+      'export const resizeRegressionMarker = "preserved"\n',
+      'text/javascript'
+    )
+  ])
+
+  return { containerUrl: resourceContainer, imageUrl, sourceUrl }
+}
+
+export async function createContainer (page: Page, parentUrl: string, slug: string): Promise<string> {
   const response = await authenticatedRequest(page, parentUrl, 'POST', ' ', 'text/turtle', {
     slug: `${slug}/`,
     link: '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
@@ -174,7 +229,19 @@ async function createContainer (page: Page, parentUrl: string, slug: string): Pr
   return new URL(`${slug}/`, parentUrl).toString()
 }
 
-async function createResource (
+export async function ensureContainer (page: Page, parentUrl: string, slug: string): Promise<string> {
+  const response = await authenticatedRequest(page, parentUrl, 'POST', ' ', 'text/turtle', {
+    slug: `${slug}/`,
+    link: '<http://www.w3.org/ns/ldp#BasicContainer>; rel="type"',
+  })
+  expect(
+    response.ok || response.status === 409,
+    `Could not create or find container ${slug}: ${response.status}`
+  ).toBeTruthy()
+  return new URL(`${slug}/`, parentUrl).toString()
+}
+
+export async function createResource (
   page: Page,
   containerUrl: string,
   slug: string,

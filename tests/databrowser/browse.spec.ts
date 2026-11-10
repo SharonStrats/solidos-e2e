@@ -1,6 +1,7 @@
 import { expect, test } from '../../fixtures/test.js'
 import { authenticateProfileOwner } from '../../fixtures/authenticate-owner.js'
 import { getLocalRuntime } from '../../fixtures/local-runtime.js'
+import { createContainer } from '../../fixtures/folder-pane.js'
 import { writeAuthenticatedResource } from '../../fixtures/databrowser.js'
 
 test.describe('standalone browse.html Databrowser', () => {
@@ -143,6 +144,58 @@ test.describe('standalone browse.html Databrowser', () => {
 
 test.describe('authenticated browse.html storage root', () => {
   test.setTimeout(90_000)
+
+  test('renders the storage header and Public as a Home resource for a browse.html root', async ({ page }) => {
+    test.skip(
+      process.env.E2E_RUN_DATABROWSER !== 'true' ||
+      process.env.E2E_RUN_LOCAL_PROFILE !== 'true' ||
+      process.env.E2E_USE_LOCAL_RUNTIME !== 'true',
+      'Run setup:local with E2E_RUN_DATABROWSER, E2E_RUN_LOCAL_PROFILE and E2E_USE_LOCAL_RUNTIME enabled.'
+    )
+
+    const runtime = getLocalRuntime()
+    await authenticateProfileOwner(page)
+    await page.goto(`/browse.html?uri=${encodeURIComponent(runtime.podUrl)}`, {
+      waitUntil: 'domcontentloaded'
+    })
+
+    await expect(page.locator('folder-pane-storage-header')).toBeVisible()
+    await expect(page.locator('folder-pane-container')
+      .getByRole('option', { name: /^Public$/i })).toBeVisible()
+    await expect(page.locator('folder-pane-sidebar')).toBeVisible()
+  })
+
+  test('renders a direct browse.html container without the folder sidebar', async ({ page }) => {
+    test.skip(
+      process.env.E2E_RUN_DATABROWSER !== 'true' ||
+      process.env.E2E_RUN_LOCAL_PROFILE !== 'true' ||
+      process.env.E2E_USE_LOCAL_RUNTIME !== 'true',
+      'Run setup:local with E2E_RUN_DATABROWSER, E2E_RUN_LOCAL_PROFILE and E2E_USE_LOCAL_RUNTIME enabled.'
+    )
+
+    const runtime = getLocalRuntime()
+    await authenticateProfileOwner(page)
+    const containerUrl = await createContainer(page, runtime.podUrl, `browse-public-${Date.now()}`)
+    try {
+      await page.goto(`/browse.html?uri=${encodeURIComponent(containerUrl)}`, {
+        waitUntil: 'domcontentloaded'
+      })
+
+      await expect(page.locator('folder-pane-storage-header')).toBeVisible()
+      await expect(page.locator('folder-pane-container')).toBeVisible()
+      await expect(page.locator('folder-pane-sidebar')).toHaveCount(0)
+      await expect(page.locator('solid-ui-file-explorer-header')).toHaveCount(0)
+    } finally {
+      await page.evaluate(async (url) => {
+        const session = (window as typeof window & {
+          SolidLogic?: { authSession?: { fetch?: typeof fetch, authFetch?: typeof fetch } }
+        }).SolidLogic?.authSession
+        const authenticatedFetch = session?.authFetch ?? session?.fetch
+        if (!authenticatedFetch) throw new Error('The browse test has no authenticated Solid session.')
+        await authenticatedFetch.call(session, url, { method: 'DELETE' })
+      }, containerUrl)
+    }
+  })
 
   test('shows the profile heading for the URI supplied in the query string', async ({ page }) => {
     test.skip(
